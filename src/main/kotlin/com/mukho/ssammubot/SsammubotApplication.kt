@@ -4,8 +4,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 
 @SpringBootApplication
-class 쌈무봇Application
+class SsammubotApplication
 
 fun main(args: Array<String>) {
-	runApplication<쌈무봇Application>(*args)
+	runApplication<SsammubotApplication>(*args)
 }
