@@ -22,12 +22,12 @@ class BasicServiceImpl: BasicService {
             /경험치히스토리 [유저명] : 경험치 히스토리 출력
         """.trimIndent()
 
-        return ResponseDto(message);
+        return ResponseDto(message)
     }
 
     override fun ssammu(): ResponseDto {
         val message = "반갑다오."
 
-        return ResponseDto(message);
+        return ResponseDto(message)
     }
 }
