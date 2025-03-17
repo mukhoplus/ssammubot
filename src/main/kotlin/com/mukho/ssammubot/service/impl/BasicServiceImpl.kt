@@ -2,6 +2,7 @@ package com.mukho.ssammubot.service.impl
 
 import com.mukho.ssammubot.model.ResponseDto
 import com.mukho.ssammubot.service.BasicService
+import com.mukho.ssammubot.utils.JoaUtil
 import org.springframework.stereotype.Service
 
 @Service("basicService")
@@ -27,6 +28,12 @@ class BasicServiceImpl: BasicService {
 
     override fun ssammu(): ResponseDto {
         val message = "반갑다오."
+
+        return ResponseDto(message)
+    }
+
+    override fun joa(text: String): ResponseDto {
+        val message = JoaUtil.getJoa(text);
 
         return ResponseDto(message)
     }
