@@ -39,4 +39,13 @@ class RandomController(private val randomService: RandomServiceImpl) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/dice")
+    fun dice(): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(randomService.dice())
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }
