@@ -24,4 +24,9 @@ class RandomServiceImpl: RandomService {
         val message = vsDto.options.random()
         return ResponseDto(message)
     }
+
+    override fun dice(): ResponseDto {
+        val message = (1..6).random().toString()
+        return ResponseDto(message)
+    }
 }
