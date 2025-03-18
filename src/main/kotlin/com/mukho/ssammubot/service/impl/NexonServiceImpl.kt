@@ -31,12 +31,10 @@ class NexonServiceImpl(private val webClient: WebClient): NexonService {
             return ResponseDto("닉네임을 다시 확인해주세요.")
         }
 
-        try {
-            val characterBasic: String = getInfo(ocid).block() ?: return ResponseDto("API 오류 발생")
-            val characterStat: String = getStat(ocid).block() ?: return ResponseDto("API 오류 발생")
-
-            return ResponseDto(characterBasic + characterStat);
-
+        return try {
+            Mono.zip(getInfo(ocid), getStat(ocid))
+                .map { ResponseDto(it.t1 + it.t2) }
+                .block() ?: ResponseDto("API 오류 발생")
         } catch (e: Exception) {
             return ResponseDto("API 오류 발생")
         }
