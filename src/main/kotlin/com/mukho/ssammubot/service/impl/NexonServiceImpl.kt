@@ -2,20 +2,23 @@ package com.mukho.ssammubot.service.impl
 
 import com.mukho.ssammubot.model.*
 import com.mukho.ssammubot.service.NexonService
+import com.mukho.ssammubot.service.RedisService
+import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import reactor.core.publisher.Mono
-import java.text.NumberFormat
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.util.*
 
 @Service("nexonService")
-class NexonServiceImpl(private val webClient: WebClient): NexonService {
+class NexonServiceImpl(
+    private val webClient: WebClient,
+    private val redisService: RedisService
+): NexonService {
 
     override fun scouter(characterName: String): ResponseDto {
-        val ocid = getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
+        val ocid = redisService.getOcid(characterName) ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
 
         if (ocid.startsWith("API 오류 발생")) {
             return ResponseDto("닉네임을 다시 확인해주세요.")
@@ -25,7 +28,7 @@ class NexonServiceImpl(private val webClient: WebClient): NexonService {
     }
 
     override fun info(characterName: String): ResponseDto {
-        val ocid = getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
+        val ocid = redisService.getOcid(characterName) ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
 
         if (ocid.startsWith("API 오류 발생")) {
             return ResponseDto("닉네임을 다시 확인해주세요.")
@@ -42,7 +45,7 @@ class NexonServiceImpl(private val webClient: WebClient): NexonService {
     }
 
     override fun history(characterName: String): ResponseDto {
-        val ocid = getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
+        val ocid = redisService.getOcid(characterName) ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
 
         if (ocid.startsWith("API 오류 발생")) {
             return ResponseDto("닉네임을 다시 확인해주세요.")
