@@ -17,17 +17,25 @@ class NexonServiceImpl(
 ): NexonService {
 
     override fun scouter(characterName: String): ResponseDto {
-        val ocid = redisService.getOcid(characterName) ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
+        val ocid = try {
+            redisService.getOcid(characterName)
+        } catch (e: Exception) {
+            null  // 500 예외(Redis 오류) 발생 시 null 반환
+        } ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생")
 
-        if (ocid.startsWith("API 오류 발생")) {
-            return ResponseDto("닉네임을 다시 확인해주세요.")
+        return if (ocid.startsWith("API 오류 발생")) {
+            ResponseDto("닉네임을 다시 확인해주세요.")
+        } else {
+            ResponseDto("https://maplescouter.com/info?name=$characterName")
         }
-
-        return ResponseDto("https://maplescouter.com/info?name=$characterName")
     }
 
     override fun info(characterName: String): ResponseDto {
-        val ocid = redisService.getOcid(characterName) ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
+        val ocid = try {
+            redisService.getOcid(characterName)
+        } catch (e: Exception) {
+            null  // 500 예외(Redis 오류) 발생 시 null 반환
+        } ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생")
 
         if (ocid.startsWith("API 오류 발생")) {
             return ResponseDto("닉네임을 다시 확인해주세요.")
@@ -40,15 +48,14 @@ class NexonServiceImpl(
         } catch (e: Exception) {
             return ResponseDto("API 오류 발생")
         }
-
     }
 
     override fun history(characterName: String): ResponseDto {
-        val ocid = redisService.getOcid(characterName) ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생");
-
-        if (ocid.startsWith("API 오류 발생")) {
-            return ResponseDto("닉네임을 다시 확인해주세요.")
-        }
+        val ocid = try {
+            redisService.getOcid(characterName)
+        } catch (e: Exception) {
+            null  // 500 예외(Redis 오류) 발생 시 null 반환
+        } ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생")
 
         try {
             val expData: MutableList<String> = mutableListOf();
