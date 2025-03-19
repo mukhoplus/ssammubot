@@ -3,7 +3,6 @@ package com.mukho.ssammubot.service.impl
 import com.mukho.ssammubot.model.*
 import com.mukho.ssammubot.service.NexonService
 import com.mukho.ssammubot.service.RedisService
-import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import reactor.core.publisher.Mono
@@ -53,20 +52,32 @@ class NexonServiceImpl(
 
         try {
             val expData: MutableList<String> = mutableListOf();
-
             val lastWeekDates: List<String> = getLastWeekDates()
 
-            for (date in lastWeekDates) {
-                val characterBasic: List<String> = getHistory(ocid, date).block() ?: return ResponseDto("API 오류 발생")
+            val now = LocalDateTime.now()
+            val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
 
-                if (expData.isEmpty()) {
-                    expData.add(characterBasic[0])
+            for (date in lastWeekDates) {
+                // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
+                if ( (now.hour < 9 && LocalDate.parse(date).plusDays(1).toString() == today)
+                    || (now.hour >= 9 && date == today) ) { // 내일 날짜와 비교
+                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: return ResponseDto("API 오류 발생")
+
+                    expData.add(0, characterBasic[0])
+                    expData.add(characterBasic[1])
+                    continue
                 }
 
-                expData.add(characterBasic[1])
+                val cachedCharacterBasic: String? = redisService.getHistory(characterName, date)
+                if (cachedCharacterBasic != null) {
+                    expData.add(cachedCharacterBasic)
+                } else {
+                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: return ResponseDto("API 오류 발생")
+                    expData.add(characterBasic[1])
+                }
             }
 
-            val message = buildString {
+            var message = buildString {
                 for (i in 0 .. 6) {
                     append(expData[i])
                     append("\n")
@@ -86,7 +97,9 @@ class NexonServiceImpl(
             .exchangeToMono { response ->
                 if (response.statusCode().is2xxSuccessful) {
                     response.bodyToMono(CharacterDto::class.java)
-                        .map { it.ocid }
+                        .map {
+                            redisService.saveOcid(characterName, it.ocid)
+                            it.ocid }
                 } else {
                     response.bodyToMono(ErrorMessageDto::class.java)
                         .flatMap { errorBody ->
@@ -200,6 +213,11 @@ class NexonServiceImpl(
                             val characterInfo = "${it.character_name} - ${it.world_name}"
                             val formattedDate = LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MM월 dd일"))
                             val levelInfo = "Lv.${it.character_level} ${it.character_exp_rate}%"
+
+                            if ( !(now.hour < 9 && LocalDate.parse(date).plusDays(1).toString() == today)
+                                && !(now.hour >= 9 && date == today) ) {
+                                redisService.saveHistory(it.character_name, date, "$formattedDate : $levelInfo")
+                            }
 
                             listOf(characterInfo, "$formattedDate : $levelInfo")
                         }

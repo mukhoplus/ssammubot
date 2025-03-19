@@ -3,8 +3,8 @@ package com.mukho.ssammubot.service
 import java.time.Duration
 
 interface RedisService {
-    fun saveOcid(username: String, ocid: String)
-    fun getOcid(username: String): String?
-    fun saveHistory(username: String, date: String, value: String)
-    fun getHistory(username: String, date: String): Map<String, String>?
+    fun saveOcid(characterName: String, ocid: String)
+    fun getOcid(characterName: String): String?
+    fun saveHistory(characterName: String, date: String, value: String)
+    fun getHistory(characterName: String, date: String): String?
 }

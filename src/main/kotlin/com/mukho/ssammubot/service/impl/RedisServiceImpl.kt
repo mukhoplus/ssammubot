@@ -14,33 +14,33 @@ class RedisServiceImpl(
     private val ocidTTL = Duration.ofDays(7)
     private val historyTTL = Duration.ofDays(9)
 
-    override fun saveOcid(username: String, ocid: String) {
-        redisTemplate.opsForHash<String, String>().put("ocid", username, ocid)
-        redisTemplate.expire("ocid", ocidTTL) // TTL 7일 적용
+    override fun saveOcid(characterName: String, ocid: String) {
+        redisTemplate.opsForValue().set("ocid:$characterName", ocid, ocidTTL)
     }
 
-    override fun getOcid(username: String): String? {
-        val ocid = redisTemplate.opsForHash<String, String>().get("ocid", username)
+    override fun getOcid(characterName: String): String? {
+        val key = "ocid:$characterName"
+        val ocid = redisTemplate.opsForValue().get(key)
 
         // 조회 시 TTL 연장
         if (ocid != null) {
-            redisTemplate.expire("ocid", ocidTTL)
+            redisTemplate.expire(key, ocidTTL)
         }
 
         return ocid
     }
 
-    override fun saveHistory(username: String, date: String, value: String) {
+    override fun saveHistory(characterName: String, date: String, value: String) {
         val key = "history:$date"
         val duration = getDuration(date)
 
-        redisTemplate.opsForHash<String, String>().put(key, username, value)
+        redisTemplate.opsForHash<String, String>().put(key, characterName, value)
         redisTemplate.expire(key, duration)
     }
 
-    override fun getHistory(username: String, date: String): Map<String, String>? {
+    override fun getHistory(characterName: String, date: String): String? {
         val key = "history:$date"
-        return redisTemplate.opsForHash<String, String>().entries(key)
+        return redisTemplate.opsForHash<String, String>().get(key, characterName)
     }
 
     fun getDuration(date: String): Duration {
