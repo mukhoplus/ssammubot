@@ -69,7 +69,9 @@ class NexonServiceImpl(
                 // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
                 if ( (now.hour < 9 && LocalDate.parse(date).plusDays(1).toString() == today)
                     || (now.hour >= 9 && date == today) ) { // 내일 날짜와 비교
-                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: continue
+                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: return ResponseDto("API 오류 발생")
+
+                    if (characterBasic.isNullOrEmpty()) continue
 
                     expData.add(0, characterBasic[0])
                     expData.add(characterBasic[1])
@@ -80,8 +82,11 @@ class NexonServiceImpl(
                 if (cachedCharacterBasic != null) {
                     expData.add(cachedCharacterBasic)
                 } else {
-                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: continue
-                    expData.add(characterBasic[1])
+                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: return ResponseDto("API 오류 발생")
+
+                    if (!characterBasic.isNullOrEmpty()) {
+                        expData.add(characterBasic[1])
+                    }
                 }
             }
 
@@ -217,28 +222,35 @@ class NexonServiceImpl(
             .exchangeToMono { response ->
                 if (response.statusCode().is2xxSuccessful) {
                     response.bodyToMono(CharacterBasicDto::class.java)
-                        .map { it ->
-                            val characterInfo = "${it.character_name} - ${it.world_name}"
-                            val formattedDate = LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MM월 dd일"))
-                            val levelInfo = "Lv.${it.character_level} ${it.character_exp_rate}%"
+                        .flatMap { dto ->
+                            // 필수 필드 검증: null 체크 추가
+                            if (dto.character_name.isNullOrEmpty()
+                                || dto.world_name.isNullOrEmpty()
+                                || dto.character_level == null
+                                || dto.character_exp_rate == null) {
+                                Mono.just(emptyList()) // 유효하지 않은 데이터 → 빈 리스트 반환
+                            } else {
+                                val characterInfo = "${dto.character_name} - ${dto.world_name}"
+                                val formattedDate = LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MM월 dd일"))
+                                val levelInfo = "Lv.${dto.character_level} ${dto.character_exp_rate}%"
 
-                            if ( !(now.hour < 9 && LocalDate.parse(date).plusDays(1).toString() == today)
-                                && !(now.hour >= 9 && date == today) ) {
-                                redisService.saveHistory(it.character_name, date, "$formattedDate : $levelInfo")
+                                // 캐싱 조건 검사 (오늘 데이터 제외)
+                                val isSpecialCase = (now.hour < 9 && LocalDate.parse(date).plusDays(1).toString() == today) ||
+                                        (now.hour >= 9 && date == today)
+                                if (!isSpecialCase) {
+                                    redisService.saveHistory(dto.character_name, date, "$formattedDate : $levelInfo")
+                                }
+
+                                Mono.just(listOf(characterInfo, "$formattedDate : $levelInfo"))
                             }
-
-                            listOf(characterInfo, "$formattedDate : $levelInfo")
                         }
                 } else {
-                    response.bodyToMono(ErrorMessageDto::class.java)
-                        .flatMap { errorBody ->
-                            println(errorBody.error.message)
-                            Mono.error(RuntimeException("API 오류 발생: ${errorBody.error.message}"))
-                        }
+                    // 오류 발생 시 빈 리스트 반환 (스킵 처리)
+                    Mono.just(emptyList())
                 }
             }
-            .onErrorResume { ex ->
-                Mono.just(listOf("API 오류 발생"))
+            .onErrorResume {
+                Mono.just(emptyList()) // 예외 발생 시 빈 리스트 반환
             }
     }
 }
