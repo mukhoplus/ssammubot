@@ -64,11 +64,12 @@ class NexonServiceImpl(
             val now = LocalDateTime.now()
             val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
 
+
             for (date in lastWeekDates) {
                 // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
                 if ( (now.hour < 9 && LocalDate.parse(date).plusDays(1).toString() == today)
                     || (now.hour >= 9 && date == today) ) { // 내일 날짜와 비교
-                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: return ResponseDto("API 오류 발생")
+                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: continue
 
                     expData.add(0, characterBasic[0])
                     expData.add(characterBasic[1])
@@ -79,7 +80,7 @@ class NexonServiceImpl(
                 if (cachedCharacterBasic != null) {
                     expData.add(cachedCharacterBasic)
                 } else {
-                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: return ResponseDto("API 오류 발생")
+                    val characterBasic: List<String> = getHistory(ocid, date).block() ?: continue
                     expData.add(characterBasic[1])
                 }
             }
