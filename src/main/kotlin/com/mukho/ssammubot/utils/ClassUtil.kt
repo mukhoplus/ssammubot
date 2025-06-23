@@ -3,7 +3,7 @@ package com.mukho.ssammubot.utils
 class ClassUtil {
     companion object {
         private val classes = listOf(
-            "메접",
+            "메접", "쌀숭이", "리슝좍",
             // 모험가
             "초보자",
             "히어로", "팔라딘", "다크나이트",
@@ -24,7 +24,7 @@ class ClassUtil {
             // 레프
             "아델", "일리움", "칼리", "아크",
             // 아니마
-            "라라", "호영",
+            "렌", "라라", "호영",
             // 초월자
             "제로",
             // 프렌즈 월드
