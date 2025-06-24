@@ -5,6 +5,7 @@ import com.mukho.ssammubot.model.VsDto
 import com.mukho.ssammubot.service.impl.RandomServiceImpl
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
@@ -31,7 +32,7 @@ class RandomController(private val randomService: RandomServiceImpl) {
         }
     }
 
-    @GetMapping("/vs")
+    @PostMapping("/vs")
     fun vs(@RequestBody vsDto: VsDto): ResponseEntity<ResponseDto> {
         return try {
             ResponseEntity.ok(randomService.vs(vsDto))
