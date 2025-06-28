@@ -21,7 +21,7 @@ class NexonServiceImpl(
             redisService.getOcid(characterName)
         } catch (e: Exception) {
             null  // 500 예외(Redis 오류) 발생 시 null 반환
-        } ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생")
+        } ?: getOcid(characterName).block() ?: "API 오류 발생"
 
         return if (ocid.startsWith("API 오류 발생")) {
             ResponseDto("닉네임을 다시 확인해주세요.")
@@ -35,7 +35,7 @@ class NexonServiceImpl(
             redisService.getOcid(characterName)
         } catch (e: Exception) {
             null  // 500 예외(Redis 오류) 발생 시 null 반환
-        } ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생")
+        } ?: getOcid(characterName).block() ?: "API 오류 발생"
 
         if (ocid.startsWith("API 오류 발생")) {
             return ResponseDto("닉네임을 다시 확인해주세요.")
@@ -135,7 +135,7 @@ class NexonServiceImpl(
                         .map { it ->
                             """
                             ${it.character_name}
-                            ${it.world_name}@${it.character_guild_name}
+                            ${it.world_name}${if (it.character_guild_name != null) "@${it.character_guild_name}" else ""}
                             ${it.character_class} | Lv.${it.character_level}
                             
                             """.trimIndent()

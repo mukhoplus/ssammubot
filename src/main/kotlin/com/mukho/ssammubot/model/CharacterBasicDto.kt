@@ -10,7 +10,7 @@ data class CharacterBasicDto(
     val character_level: Number,
     val character_exp: Number,
     val character_exp_rate: String,
-    val character_guild_name: String,
+    val character_guild_name: String?,
     val character_image: String,
     val character_date_create: String,
     val access_flag: String,
