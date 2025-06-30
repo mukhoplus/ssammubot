@@ -42,9 +42,16 @@ class NexonServiceImpl(
         }
 
         return try {
-            Mono.zip(getInfo(ocid), getStat(ocid))
+            val result = Mono.zip(getInfo(ocid), getStat(ocid))
                 .map { ResponseDto(it.t1 + it.t2) }
                 .block() ?: ResponseDto("API 오류 발생")
+
+            if (result.message.startsWith("API 오류 발생") ) {
+                // 캐릭터 기본정보 조회(기준일:undefined) 오류 시, "API 오류 발생API 오류 발생" 출력
+                throw Exception("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+            }
+
+            result
         } catch (e: Exception) {
             return ResponseDto("API 오류 발생")
         }
@@ -55,15 +62,18 @@ class NexonServiceImpl(
             redisService.getOcid(characterName)
         } catch (e: Exception) {
             null  // 500 예외(Redis 오류) 발생 시 null 반환
-        } ?: getOcid(characterName).block() ?: return ResponseDto("API 오류 발생")
+        } ?: getOcid(characterName).block() ?: "API 오류 발생"
+
+        if (ocid.startsWith("API 오류 발생")) {
+            return ResponseDto("닉네임을 다시 확인해주세요.")
+        }
 
         try {
-            val expData: MutableList<String> = mutableListOf();
+            val expData: MutableList<String> = mutableListOf()
             val lastWeekDates: List<String> = getLastWeekDates()
 
             val now = LocalDateTime.now()
             val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
-
 
             for (date in lastWeekDates) {
                 // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
@@ -90,15 +100,19 @@ class NexonServiceImpl(
                 }
             }
 
-            val message = buildString {
-                for (i in 0 .. expData.size - 2) {
-                    append(expData[i])
-                    append("\n")
+            try {
+                val message = buildString {
+                    for (i in 0 .. expData.size - 2) {
+                        append(expData[i])
+                        append("\n")
+                    }
+                    append(expData[expData.size - 1])
                 }
-                append(expData[expData.size - 1])
-            }
 
-            return ResponseDto(message);
+                return ResponseDto(message)
+            } catch (e: Exception) {
+                return ResponseDto("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+            }
         } catch (e: Exception) {
             return ResponseDto("API 오류 발생")
         }
@@ -116,7 +130,7 @@ class NexonServiceImpl(
                 } else {
                     response.bodyToMono(ErrorMessageDto::class.java)
                         .flatMap { errorBody ->
-                            println(errorBody.error.message)
+//                            println(errorBody.error.message)
                             Mono.error(RuntimeException("API 오류 발생: ${errorBody.error.message}"))
                         }
                 }
