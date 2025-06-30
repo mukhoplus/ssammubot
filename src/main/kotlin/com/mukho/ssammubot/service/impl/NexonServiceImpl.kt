@@ -53,7 +53,10 @@ class NexonServiceImpl(
 
             result
         } catch (e: Exception) {
-            return ResponseDto("API 오류 발생")
+            if (e.message.isNullOrEmpty()) {
+                return ResponseDto("API 오류 발생")
+            }
+            return ResponseDto(e.message!!)
         }
     }
 
