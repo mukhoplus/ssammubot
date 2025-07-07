@@ -136,17 +136,39 @@ class NexonServiceImpl(
                                 val characterBasic: List<String>? = getHistory(ocid, date).block()
 
                                 if (!characterBasic.isNullOrEmpty()) {
-                                    expData.add(characterBasic[1])
+                                    // getHistory 결과에 대한 에러 처리
+                                    val historyResult = characterBasic[1]
+                                    when {
+                                        historyResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> {
+                                            return ResponseDto("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                                        }
+                                        historyResult.startsWith("API 오류 발생") -> {
+                                            return ResponseDto("API 오류 발생")
+                                        }
+                                        historyResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> {
+                                            return ResponseDto("사용량이 많습니다. 다시 시도해주세요")
+                                        }
+                                        historyResult.startsWith("Nexon API 서버 오류 발생") -> {
+                                            return ResponseDto("Nexon API 서버 오류 발생")
+                                        }
+                                        else -> {
+                                            expData.add(historyResult)
+                                        }
+                                    }
                                 }
                             }
                         }
 
                         val message = buildString {
-                            for (i in 0 .. expData.size - 2) {
-                                append(expData[i])
-                                append("\n")
+                            if (expData.isEmpty()) {
+                                append("히스토리 데이터가 없습니다.")
+                            } else {
+                                for (i in 0 .. expData.size - 2) {
+                                    append(expData[i])
+                                    append("\n")
+                                }
+                                append(expData[expData.size - 1])
                             }
-                            append(expData[expData.size - 1])
                         }
 
                         ResponseDto(message)
@@ -197,19 +219,16 @@ class NexonServiceImpl(
                         else -> {
                             response.bodyToMono(ErrorMessageDto::class.java)
                                 .flatMap { errorBody ->
-                                    println("예상치 못한 오류: ${errorBody.error.message}")
                                     Mono.just("API 오류 발생")
                                 }
                         }
                     }
                 }
                 .onErrorResume { ex ->
-                    println("네트워크 오류: ${ex.message}")
                     Mono.just("API 오류 발생")
                 }
                 .block() ?: "API 오류 발생"
         } catch (e: Exception) {
-            println("OCID 조회 중 예외 발생: ${e.message}")
             "API 오류 발생"
         }
     }
@@ -237,14 +256,12 @@ class NexonServiceImpl(
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap { errorBody ->
-                                println("getInfo 예상치 못한 오류: ${errorBody.error.message}")
                                 Mono.just("API 오류 발생")
                             }
                     }
                 }
             }
             .onErrorResume { ex ->
-                println("getInfo 네트워크 오류: ${ex.message}")
                 Mono.just("API 오류 발생")
             }
     }
@@ -284,14 +301,12 @@ class NexonServiceImpl(
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap { errorBody ->
-                                println("getStat 예상치 못한 오류: ${errorBody.error.message}")
                                 Mono.just("API 오류 발생")
                             }
                     }
                 }
             }
             .onErrorResume { ex ->
-                println("getStat 네트워크 오류: ${ex.message}")
                 Mono.just("API 오류 발생")
             }
     }
@@ -350,30 +365,24 @@ class NexonServiceImpl(
                             }
                     }
                     400 -> {
-                        println("getHistory 400 오류: 2023년 12월 21일 이후의 접속 기록이 없습니다. (날짜: $date)")
-                        Mono.just(emptyList()) // 400 오류 시 빈 리스트 반환 (스킵 처리)
+                        Mono.just(listOf("", "2023년 12월 21일 이후의 접속 기록이 없습니다."))
                     }
                     403 -> {
-                        println("getHistory 403 오류: API 오류 발생 (날짜: $date)")
-                        Mono.just(emptyList()) // 403 오류 시 빈 리스트 반환 (스킵 처리)
+                        Mono.just(listOf("", "API 오류 발생"))
                     }
                     429 -> {
-                        println("getHistory 429 오류: 사용량이 많습니다. 다시 시도해주세요 (날짜: $date)")
-                        Mono.just(emptyList()) // 429 오류 시 빈 리스트 반환 (스킵 처리)
+                        Mono.just(listOf("", "사용량이 많습니다. 다시 시도해주세요"))
                     }
                     500 -> {
-                        println("getHistory 500 오류: Nexon API 서버 오류 발생 (날짜: $date)")
-                        Mono.just(emptyList()) // 500 오류 시 빈 리스트 반환 (스킵 처리)
+                        Mono.just(listOf("", "Nexon API 서버 오류 발생"))
                     }
                     else -> {
-                        println("getHistory 예상치 못한 오류: ${response.statusCode()} (날짜: $date)")
-                        Mono.just(emptyList()) // 기타 오류 시 빈 리스트 반환 (스킵 처리)
+                        Mono.just(listOf("", "API 오류 발생"))
                     }
                 }
             }
             .onErrorResume { ex ->
-                println("getHistory 네트워크 오류: ${ex.message} (날짜: $date)")
-                Mono.just(emptyList()) // 예외 발생 시 빈 리스트 반환
+                Mono.just(listOf("", "API 오류 발생"))
             }
     }
 }
