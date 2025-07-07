@@ -23,7 +23,7 @@ class ApiLogServiceImpl : ApiLogService {
         val parametersStr = parameters.entries.joinToString(", ") { "${it.key}=${it.value}" }
         val resultStr = when {
             error != null -> "ERROR: $error"
-            result != null -> result.toString().take(200) // 결과를 200자로 제한
+            result != null -> result.toString().take(400) // 결과를 200자로 제한
             else -> "NULL"
         }
         
@@ -53,7 +53,7 @@ class ApiLogServiceImpl : ApiLogService {
     ) {
         val timestamp = LocalDateTime.now().format(dateFormatter)
         val parametersStr = parameters.entries.joinToString(", ") { "${it.key}=${it.value}" }
-        val responseStr = responseBody?.take(200) ?: "NULL"
+        val responseStr = responseBody?.take(400) ?: "NULL"
         
         val logMessage = """
             |==================== 외부 API 호출 로그 ====================
