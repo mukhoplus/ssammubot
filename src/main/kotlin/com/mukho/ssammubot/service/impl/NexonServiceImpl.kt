@@ -120,8 +120,15 @@ class NexonServiceImpl(
                             // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
                             if ( (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today)
                                 || (now.hour >= 6 && date == today) ) { // 내일 날짜와 비교
-                                val characterBasic: List<String>? = getHistory(ocid, date).block()
+                                val characterBasic = getHistory(ocid, date).block()
                                 if (characterBasic.isNullOrEmpty()) continue
+
+                                if (characterBasic.size == 1) {
+                                    if (characterBasic[0].startsWith("2023년")) {
+                                        ResponseDto(characterBasic[0])
+                                        break
+                                    }
+                                }
 
                                 expData.add(0, characterBasic[0])
                                 expData.add(characterBasic[1])
@@ -136,25 +143,14 @@ class NexonServiceImpl(
                                 val characterBasic: List<String>? = getHistory(ocid, date).block()
 
                                 if (!characterBasic.isNullOrEmpty()) {
-                                    // getHistory 결과에 대한 에러 처리
-                                    val historyResult = characterBasic[1]
-                                    when {
-                                        historyResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> {
-                                            return ResponseDto("2023년 12월 21일 이후의 접속 기록이 없습니다.")
-                                        }
-                                        historyResult.startsWith("API 오류 발생") -> {
-                                            return ResponseDto("API 오류 발생")
-                                        }
-                                        historyResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> {
-                                            return ResponseDto("사용량이 많습니다. 다시 시도해주세요")
-                                        }
-                                        historyResult.startsWith("Nexon API 서버 오류 발생") -> {
-                                            return ResponseDto("Nexon API 서버 오류 발생")
-                                        }
-                                        else -> {
-                                            expData.add(historyResult)
+                                    if (characterBasic.size == 1) {
+                                        if (characterBasic[0].startsWith("2023년")) {
+                                            ResponseDto(characterBasic[0])
+                                            break
                                         }
                                     }
+
+                                    expData.add(characterBasic[1])
                                 }
                             }
                         }
@@ -338,51 +334,38 @@ class NexonServiceImpl(
         return webClient.get()
             .uri(url)
             .exchangeToMono { response ->
-                when (response.statusCode().value()) {
-                    200 -> {
-                        response.bodyToMono(CharacterBasicDto::class.java)
-                            .flatMap { dto ->
-                                // 필수 필드 검증: null 체크 추가
-                                if (dto.character_name.isNullOrEmpty()
-                                    || dto.world_name.isNullOrEmpty()
-                                    || dto.character_level == null
-                                    || dto.character_exp_rate == null) {
-                                    Mono.just(emptyList()) // 유효하지 않은 데이터 → 빈 리스트 반환
-                                } else {
-                                    val characterInfo = "${dto.character_name} - ${dto.world_name}"
-                                    val formattedDate = LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MM월 dd일"))
-                                    val levelInfo = "Lv.${dto.character_level} ${dto.character_exp_rate}%"
+                if (response.statusCode().is2xxSuccessful) {
+                    response.bodyToMono(CharacterBasicDto::class.java)
+                        .flatMap { dto ->
+                            // 필수 필드 검증: null 체크 추가
+                            if (dto.character_name.isNullOrEmpty()
+                                || dto.world_name.isNullOrEmpty()
+                                || dto.character_level == null
+                                || dto.character_exp_rate == null
+                            ) {
+                                Mono.just(emptyList()) // 유효하지 않은 데이터 → 빈 리스트 반환
+                            } else {
+                                val characterInfo = "${dto.character_name} - ${dto.world_name}"
+                                val formattedDate = LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MM월 dd일"))
+                                val levelInfo = "Lv.${dto.character_level} ${dto.character_exp_rate}%"
 
-                                    // 캐싱 조건 검사 (오늘 데이터 제외)
-                                    val isSpecialCase = (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
+                                // 캐싱 조건 검사 (오늘 데이터 제외)
+                                val isSpecialCase =
+                                    (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
                                             (now.hour >= 6 && date == today)
-                                    if (!isSpecialCase) {
-                                        redisService.saveHistory(dto.character_name, date, "$formattedDate : $levelInfo")
-                                    }
-
-                                    Mono.just(listOf(characterInfo, "$formattedDate : $levelInfo"))
+                                if (!isSpecialCase) {
+                                    redisService.saveHistory(dto.character_name, date, "$formattedDate : $levelInfo")
                                 }
+
+                                Mono.just(listOf(characterInfo, "$formattedDate : $levelInfo"))
                             }
-                    }
-                    400 -> {
-                        Mono.just(listOf("", "2023년 12월 21일 이후의 접속 기록이 없습니다."))
-                    }
-                    403 -> {
-                        Mono.just(listOf("", "API 오류 발생"))
-                    }
-                    429 -> {
-                        Mono.just(listOf("", "사용량이 많습니다. 다시 시도해주세요"))
-                    }
-                    500 -> {
-                        Mono.just(listOf("", "Nexon API 서버 오류 발생"))
-                    }
-                    else -> {
-                        Mono.just(listOf("", "API 오류 발생"))
-                    }
+                        }
+                } else {
+                    Mono.just(listOf("2023년 12월 21일 이후의 접속 기록이 없습니다."))
                 }
             }
-            .onErrorResume { ex ->
-                Mono.just(listOf("", "API 오류 발생"))
+            .onErrorResume {
+                Mono.just(listOf("API 오류 발생"))
             }
     }
 }
