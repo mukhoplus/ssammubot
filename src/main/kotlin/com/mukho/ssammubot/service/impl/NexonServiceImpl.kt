@@ -116,6 +116,8 @@ class NexonServiceImpl(
                         val now = LocalDateTime.now()
                         val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
 
+                        var isValidId = true
+
                         for (date in lastWeekDates) {
                             // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
                             if ( (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today)
@@ -125,7 +127,7 @@ class NexonServiceImpl(
 
                                 if (characterBasic.size == 1) {
                                     if (characterBasic[0].startsWith("2023년")) {
-                                        ResponseDto(characterBasic[0])
+                                        isValidId = false
                                         break
                                     }
                                 }
@@ -145,7 +147,7 @@ class NexonServiceImpl(
                                 if (!characterBasic.isNullOrEmpty()) {
                                     if (characterBasic.size == 1) {
                                         if (characterBasic[0].startsWith("2023년")) {
-                                            ResponseDto(characterBasic[0])
+                                            isValidId = false
                                             break
                                         }
                                     }
@@ -157,7 +159,11 @@ class NexonServiceImpl(
 
                         val message = buildString {
                             if (expData.isEmpty()) {
-                                append("히스토리 데이터가 없습니다.")
+                                if (isValidId) {
+                                    append("히스토리 데이터가 없습니다.")
+                                } else {
+                                    append("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                                }
                             } else {
                                 for (i in 0 .. expData.size - 2) {
                                     append(expData[i])
