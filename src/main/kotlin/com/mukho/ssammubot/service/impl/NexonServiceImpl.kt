@@ -1,6 +1,7 @@
 package com.mukho.ssammubot.service.impl
 
 import com.mukho.ssammubot.model.*
+import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.NexonService
 import com.mukho.ssammubot.service.RedisService
 import org.springframework.stereotype.Service
@@ -13,113 +14,156 @@ import java.time.format.DateTimeFormatter
 @Service("nexonService")
 class NexonServiceImpl(
     private val webClient: WebClient,
-    private val redisService: RedisService
+    private val redisService: RedisService,
+    private val apiLogService: ApiLogService
 ): NexonService {
 
     override fun scouter(characterName: String): ResponseDto {
-        val ocid = fetchOcid(characterName)
+        val startTime = System.currentTimeMillis()
+        val parameters = mapOf("characterName" to characterName)
         
-        return when {
-            ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
-            ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-            ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-            ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-            else -> ResponseDto("https://maplescouter.com/info?name=$characterName")
+        return try {
+            val ocid = fetchOcid(characterName)
+            
+            val result = when {
+                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
+                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
+                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
+                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
+                else -> ResponseDto("https://maplescouter.com/info?name=$characterName")
+            }
+            
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("scouter", parameters, result, processingTime)
+            
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("scouter", parameters, null, processingTime, e.message)
+            throw e
         }
     }
 
     override fun info(characterName: String): ResponseDto {
-        val ocid = fetchOcid(characterName)
+        val startTime = System.currentTimeMillis()
+        val parameters = mapOf("characterName" to characterName)
         
-        return when {
-            ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요")
-            ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-            ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-            ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-            else -> {
-                try {
-                    val result = Mono.zip(getInfo(ocid), getStat(ocid))
-                        .map { tuple ->
-                            val infoResult = tuple.t1
-                            val statResult = tuple.t2
-                            
-                            // 각 결과에 대한 에러 처리
-                            when {
-                                infoResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                                infoResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                                infoResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                                infoResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
-                                statResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                                statResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                                statResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                                statResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
-                                else -> infoResult + statResult
+        return try {
+            val ocid = fetchOcid(characterName)
+            
+            val result = when {
+                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요")
+                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
+                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
+                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
+                else -> {
+                    try {
+                        val result = Mono.zip(getInfo(ocid), getStat(ocid))
+                            .map { tuple ->
+                                val infoResult = tuple.t1
+                                val statResult = tuple.t2
+                                
+                                // 각 결과에 대한 에러 처리
+                                when {
+                                    infoResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                    infoResult.startsWith("API 오류 발생") -> "API 오류 발생"
+                                    infoResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
+                                    infoResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
+                                    statResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                    statResult.startsWith("API 오류 발생") -> "API 오류 발생"
+                                    statResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
+                                    statResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
+                                    else -> infoResult + statResult
+                                }
                             }
-                        }
-                        .block() ?: "API 오류 발생"
-                        
-                    ResponseDto(result)
-                } catch (e: Exception) {
-                    ResponseDto("API 오류 발생")
+                            .block() ?: "API 오류 발생"
+                            
+                        ResponseDto(result)
+                    } catch (e: Exception) {
+                        ResponseDto("API 오류 발생")
+                    }
                 }
             }
+            
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("info", parameters, result, processingTime)
+            
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("info", parameters, null, processingTime, e.message)
+            throw e
         }
     }
 
     override fun history(characterName: String): ResponseDto {
-        val ocid = fetchOcid(characterName)
+        val startTime = System.currentTimeMillis()
+        val parameters = mapOf("characterName" to characterName)
         
-        return when {
-            ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
-            ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-            ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-            ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-            else -> {
-                try {
-                    val expData: MutableList<String> = mutableListOf()
-                    val lastWeekDates: List<String> = getLastWeekDates()
+        return try {
+            val ocid = fetchOcid(characterName)
+            
+            val result = when {
+                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
+                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
+                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
+                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
+                else -> {
+                    try {
+                        val expData: MutableList<String> = mutableListOf()
+                        val lastWeekDates: List<String> = getLastWeekDates()
 
-                    val now = LocalDateTime.now()
-                    val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
+                        val now = LocalDateTime.now()
+                        val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
 
-                    for (date in lastWeekDates) {
-                        // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
-                        if ( (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today)
-                            || (now.hour >= 6 && date == today) ) { // 내일 날짜와 비교
-                            val characterBasic: List<String>? = getHistory(ocid, date).block()
-                            if (characterBasic.isNullOrEmpty()) continue
+                        for (date in lastWeekDates) {
+                            // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
+                            if ( (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today)
+                                || (now.hour >= 6 && date == today) ) { // 내일 날짜와 비교
+                                val characterBasic: List<String>? = getHistory(ocid, date).block()
+                                if (characterBasic.isNullOrEmpty()) continue
 
-                            expData.add(0, characterBasic[0])
-                            expData.add(characterBasic[1])
-                            continue
-                        }
-
-                        val cachedCharacterBasic: String? = redisService.getHistory(characterName, date)
-
-                        if (cachedCharacterBasic != null) {
-                            expData.add(cachedCharacterBasic)
-                        } else {
-                            val characterBasic: List<String>? = getHistory(ocid, date).block()
-
-                            if (!characterBasic.isNullOrEmpty()) {
+                                expData.add(0, characterBasic[0])
                                 expData.add(characterBasic[1])
+                                continue
+                            }
+
+                            val cachedCharacterBasic: String? = redisService.getHistory(characterName, date)
+
+                            if (cachedCharacterBasic != null) {
+                                expData.add(cachedCharacterBasic)
+                            } else {
+                                val characterBasic: List<String>? = getHistory(ocid, date).block()
+
+                                if (!characterBasic.isNullOrEmpty()) {
+                                    expData.add(characterBasic[1])
+                                }
                             }
                         }
-                    }
 
-                    val message = buildString {
-                        for (i in 0 .. expData.size - 2) {
-                            append(expData[i])
-                            append("\n")
+                        val message = buildString {
+                            for (i in 0 .. expData.size - 2) {
+                                append(expData[i])
+                                append("\n")
+                            }
+                            append(expData[expData.size - 1])
                         }
-                        append(expData[expData.size - 1])
-                    }
 
-                    ResponseDto(message)
-                } catch (e: Exception) {
-                    ResponseDto("API 오류 발생")
+                        ResponseDto(message)
+                    } catch (e: Exception) {
+                        ResponseDto("API 오류 발생")
+                    }
                 }
             }
+            
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("history", parameters, result, processingTime)
+            
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("history", parameters, null, processingTime, e.message)
+            throw e
         }
     }
 
