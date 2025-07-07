@@ -261,7 +261,7 @@ class NexonServiceImpl(
 
     fun getLastWeekDates(): List<String> {
         val now = LocalDateTime.now()
-        val startDay = if (now.hour < 9) 1L else 0L
+        val startDay = if (now.hour < 6) 1L else 0L
 
         return ((startDay + 6) downTo startDay).map { getDate(it) }
     }
@@ -270,7 +270,7 @@ class NexonServiceImpl(
         val now = LocalDateTime.now()
         val today = getDate(0)
 
-        val isOneDayBehind = LocalDate.parse(date).plusDays(1).toString() == today && now.hour < 9
+        val isOneDayBehind = LocalDate.parse(date).plusDays(1).toString() == today && now.hour < 6
         val url = if (date == today || isOneDayBehind)
             "/character/basic?ocid=$ocid"
         else
@@ -295,8 +295,8 @@ class NexonServiceImpl(
                                     val levelInfo = "Lv.${dto.character_level} ${dto.character_exp_rate}%"
 
                                     // 캐싱 조건 검사 (오늘 데이터 제외)
-                                    val isSpecialCase = (now.hour < 9 && LocalDate.parse(date).plusDays(1).toString() == today) ||
-                                            (now.hour >= 9 && date == today)
+                                    val isSpecialCase = (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
+                                            (now.hour >= 6 && date == today)
                                     if (!isSpecialCase) {
                                         redisService.saveHistory(dto.character_name, date, "$formattedDate : $levelInfo")
                                     }
