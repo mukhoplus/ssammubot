@@ -206,6 +206,7 @@ class NexonServiceImpl(
                 }
             }
             .onErrorResume { ex ->
+                println(ex)
                 Mono.just("API 오류 발생")
             }
     }
