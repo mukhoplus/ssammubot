@@ -28,6 +28,9 @@ class BasicServiceImpl(
                 /직업추천 : 랜덤 직업 추천
                 /정보 [유저명] : 유저 정보 출력
                 /경험치히스토리 [유저명] : 경험치 히스토리 출력
+                /잠재 : 잠재능력 시뮬레이터 링크
+                /심볼 [유저명] : 유저의 장착 심볼 정보 출력
+                /어빌 [유저명] : 유저의 어빌리티 정보 출력
             """.trimIndent()
 
             val result = ResponseDto(message)
