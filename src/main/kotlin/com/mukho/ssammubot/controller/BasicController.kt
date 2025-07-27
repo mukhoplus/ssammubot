@@ -38,4 +38,13 @@ class BasicController(private val basicService: BasicService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/poten")
+    fun poten(): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(basicService.poten())
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }
