@@ -79,4 +79,23 @@ class BasicServiceImpl(
             throw e
         }
     }
+
+    override fun poten(): ResponseDto {
+        val startTime = System.currentTimeMillis()
+        val parameters = emptyMap<String, Any>()
+
+        return try {
+            val message = "https://potential-simulator.vercel.app/"
+            val result = ResponseDto(message)
+
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("poten", parameters, result, processingTime)
+
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("poten", parameters, null, processingTime, e.message)
+            throw e
+        }
+    }
 }
