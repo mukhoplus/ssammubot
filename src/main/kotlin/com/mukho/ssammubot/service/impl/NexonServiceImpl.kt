@@ -512,17 +512,17 @@ class NexonServiceImpl(
         return buildString {
             append("$characterName - 심볼 정보\n")
 
-            append("- 아케인심볼\n")
+            append("* 아케인심볼\n")
             append("여로 Lv.${symbolLevels["여로"]} / 츄츄 Lv.${symbolLevels["츄츄"]}\n")
             append("레헬른 Lv.${symbolLevels["레헬른"]} / 아르카나 Lv.${symbolLevels["아르카나"]}\n")
             append("모라스 Lv.${symbolLevels["모라스"]} / 에스페라 Lv.${symbolLevels["에스페라"]}\n")
 
-            append("- 어센틱심볼\n")
+            append("* 어센틱심볼\n")
             append("세르니움 Lv.${symbolLevels["세르니움"]} / 아르크스 Lv.${symbolLevels["아르크스"]}\n")
             append("오디움 Lv.${symbolLevels["오디움"]} / 도원경 Lv.${symbolLevels["도원경"]}\n")
             append("아르테리아 Lv.${symbolLevels["아르테리아"]} / 카르시온 Lv.${symbolLevels["카르시온"]}\n")
 
-            append("- 그랜드 어센틱심볼\n")
+            append("* 그랜드 어센틱심볼\n")
             append("탈라하트 Lv.${symbolLevels["탈라하트"]}")
         }
     }
@@ -567,7 +567,6 @@ class NexonServiceImpl(
             dto.ability_preset_1.ability_info.forEachIndexed { index, abilityInfo ->
                 append("${index + 1}. [${abilityInfo.ability_grade}] ${abilityInfo.ability_value}\n")
             }
-            append("\n")
 
             // 프리셋 2
             val preset2Prefix = if (currentPreset == 2) "* " else ""
@@ -575,7 +574,6 @@ class NexonServiceImpl(
             dto.ability_preset_2.ability_info.forEachIndexed { index, abilityInfo ->
                 append("${index + 1}. [${abilityInfo.ability_grade}] ${abilityInfo.ability_value}\n")
             }
-            append("\n")
 
             // 프리셋 3
             val preset3Prefix = if (currentPreset == 3) "* " else ""
