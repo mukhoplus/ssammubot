@@ -44,4 +44,13 @@ class NexonController(private val nexonService: NexonService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/abil")
+    fun abil(@RequestParam characterName: String): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.abil(characterName))
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }
