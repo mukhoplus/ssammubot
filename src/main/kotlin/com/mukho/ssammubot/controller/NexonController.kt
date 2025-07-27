@@ -35,4 +35,13 @@ class NexonController(private val nexonService: NexonService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/symbol")
+    fun symbol(@RequestParam characterName: String): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.symbol(characterName))
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }
