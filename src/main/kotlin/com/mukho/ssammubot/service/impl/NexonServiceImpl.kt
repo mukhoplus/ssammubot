@@ -269,12 +269,9 @@ class NexonServiceImpl(
         targetLevel: Int?
     ): ResponseDto {
         val startTime = System.currentTimeMillis()
+        var actualTargetLevel = targetLevel
         val parameters: Map<String, Any?> = mapOf("characterName" to characterName, "targetLevel" to targetLevel)
         return try {
-            if (targetLevel == null) {
-                return ResponseDto("목표 레벨을 입력해주세요. 예시: /레벨업 [목표레벨]")
-            }
-
             val ocid = fetchOcid(characterName)
             if (ocid.startsWith("닉네임을 다시 확인해주세요") || ocid.startsWith("API 오류 발생") || ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") || ocid.startsWith("Nexon API 서버 오류 발생")) {
                 return ResponseDto(ocid)
@@ -283,39 +280,56 @@ class NexonServiceImpl(
             val lastWeekDates = getLastWeekDates()
             val levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
             if (levelExpHistory.isEmpty()) {
-                return ResponseDto("최근 경험치 이력이 없습니다. 먼저 /경험치히스토리 명령어로 데이터를 갱신해주세요.")
+                return ResponseDto("최근 경험치 데이터가 없습니다.")
             }
 
             val (curLevel, curExp) = levelExpHistory.last()
             val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
 
+            // 캐릭터명 - 월드 정보 추출 (가장 최근 날짜)
+            val lastDate = lastWeekDates.last()
+            val charWorldInfo = getHistory(ocid, lastDate).block()?.getOrNull(0) ?: ""
+
+            // targetLevel이 null이면 다음 레벨로 자동 설정
+            if (actualTargetLevel == null) {
+                if (curLevel >= 300) {
+                    return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
+                }
+                actualTargetLevel = curLevel + 1
+            }
+
             // 예외처리: 300 초과, 현재 레벨 이하
             if (curLevel >= 300) {
-                return ResponseDto("이미 만렙(300)입니다.")
+                return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
             }
-            if (targetLevel > 300) {
+            if (actualTargetLevel > 300) {
                 return ResponseDto("목표 레벨이 300을 초과합니다.")
             }
-            if (targetLevel <= curLevel) {
+            if (actualTargetLevel <= curLevel) {
                 return ResponseDto("목표 레벨이 현재 레벨보다 낮거나 같습니다.")
             }
             if (avgExpGain <= 0) {
-                return ResponseDto("경험치 증가량이 없어 예상 날짜를 계산할 수 없습니다.")
+                return ResponseDto("$charWorldInfo\n경험치 증가량이 없어 예상 날짜를 계산할 수 없습니다.")
             }
 
-            val requiredExp = ExperienceUtil.getExpToTargetLevel(curLevel, curExp, targetLevel)
-            val estimatedDays = ceil(requiredExp.toDouble() / avgExpGain).toInt()
-            val targetDate = LocalDate.now().plusDays(estimatedDays.toLong())
-            val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+            val requiredExp = ExperienceUtil.getExpToTargetLevel(curLevel, curExp, actualTargetLevel)
+            val estimatedDays = ceil(requiredExp.toDouble() / avgExpGain).toLong()
+            val (dateMsg, daysMsg) = if (estimatedDays > 100000) {
+                "예상 불가" to "(예상 소요 기간이 10만 일 이상입니다.)"
+            } else {
+                val targetDate = LocalDate.now().plusDays(estimatedDays)
+                val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+                formattedDate to "(${estimatedDays}일 후)"
+            }
+
 
             val message = buildString {
+                if (charWorldInfo.isNotBlank()) {
+                    append("$charWorldInfo\n")
+                }
                 append("현재 레벨: $curLevel\n")
-                append("현재 경험치: $curExp\n")
-                append("목표 레벨: $targetLevel\n")
-                append("필요 경험치: $requiredExp\n")
-                append("최근 평균 일일 경험치 증가량: $avgExpGain\n")
-                append("\n목표 레벨까지 예상 소요 기간: ${estimatedDays}일\n")
-                append("예상 달성 날짜: $formattedDate")
+                append("목표 레벨: $actualTargetLevel\n")
+                append("예상 달성 날짜: $dateMsg$daysMsg")
             }
 
             val result = ResponseDto(message)
