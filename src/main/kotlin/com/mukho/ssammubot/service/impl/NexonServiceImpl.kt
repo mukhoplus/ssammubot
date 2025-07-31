@@ -321,14 +321,10 @@ class NexonServiceImpl(
 
             val requiredExp = ExperienceUtil.getExpToTargetLevel(curLevel, curExp, actualTargetLevel)
             val estimatedDays = ceil(requiredExp.toDouble() / avgExpGain).toLong()
-            val (dateMsg, daysMsg) = if (estimatedDays > 100000) {
-                "예상 불가" to "(예상 소요 기간이 10만 일 이상입니다.)"
-            } else {
-                val targetDate = LocalDate.now().plusDays(estimatedDays)
-                val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
-                formattedDate to "(${estimatedDays}일 후)"
-            }
-
+            val targetDate = LocalDate.now().plusDays(estimatedDays)
+            val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+            val dateMsg = formattedDate
+            val daysMsg = "(${estimatedDays}일 후)"
 
             val message = buildString {
                 if (charWorldInfo.isNotBlank()) {
