@@ -14,7 +14,7 @@ class ApiLogServiceImpl : ApiLogService {
     
     override fun logApiCall(
         apiName: String,
-        parameters: Map<String, Any>,
+        parameters: Map<String, Any?>,
         result: Any?,
         processingTime: Long,
         error: String?
