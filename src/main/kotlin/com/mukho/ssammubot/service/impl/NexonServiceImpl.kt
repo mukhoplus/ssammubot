@@ -701,13 +701,21 @@ class NexonServiceImpl(
                 result.add(redisData)
                 continue
             }
-            // redis에 없으면 api 호출 후 redis 저장
+            // redis에 없으면 api 호출 (오늘/0~6시 특수 케이스는 redis 저장 X)
             val apiData = getHistory(ocid, date).block()
             if (apiData != null && apiData.size >= 4) {
                 val level = apiData[2].toIntOrNull()
                 val exp = apiData[3].toLongOrNull()
                 if (level != null && exp != null) {
-                    redisService.saveLevelExp(characterName, date, level, exp)
+                    // 오늘 날짜 또는 0~6시 특수 케이스는 redis 저장하지 않음
+                    val now = LocalDateTime.now()
+                    val today = getDate(0)
+                    val isSpecialCase =
+                        (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
+                        (now.hour >= 6 && date == today)
+                    if (!isSpecialCase) {
+                        redisService.saveLevelExp(characterName, date, level, exp)
+                    }
                     result.add(Pair(level, exp))
                 }
             }
