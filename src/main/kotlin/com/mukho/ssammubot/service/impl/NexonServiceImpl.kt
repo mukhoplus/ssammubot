@@ -114,15 +114,21 @@ class NexonServiceImpl(
                         val lastWeekDates = getLastWeekDates()
                         val now = LocalDateTime.now()
                         val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
+
                         val expData: MutableList<String> = mutableListOf()
                         var isValidId = true
                         var currentLevel = 0
                         var currentExp = 0L
+                        var charWorldInfo: String? = null
 
-                        // expData(출력용) - 캐릭터명/월드, 레벨/퍼센트 등 기존 방식 유지
                         for (date in lastWeekDates) {
                             val cachedCharacterBasic: String? = redisService.getHistory(characterName, date)
                             if (cachedCharacterBasic != null) {
+                                // 캐릭터명-월드 정보는 첫 번째 캐시에서만 추출
+                                if (charWorldInfo == null) {
+                                    val historyFromApi = getHistory(ocid, date).block()
+                                    charWorldInfo = historyFromApi?.getOrNull(0) ?: ""
+                                }
                                 expData.add(cachedCharacterBasic)
                             } else {
                                 val characterBasic: List<String>? = getHistory(ocid, date).block()
@@ -134,7 +140,9 @@ class NexonServiceImpl(
                                         }
                                     }
                                     // characterBasic[0]: 캐릭터명-월드, characterBasic[1]: 레벨/퍼센트
-                                    expData.add(characterBasic[0])
+                                    if (charWorldInfo == null) {
+                                        charWorldInfo = characterBasic[0]
+                                    }
                                     expData.add(characterBasic[1])
                                 }
                             }
@@ -170,15 +178,14 @@ class NexonServiceImpl(
                                     append("2023년 12월 21일 이후의 접속 기록이 없습니다.")
                                 }
                             } else {
-                                append(expData[expData.size - 2]) // 캐릭터명 - 월드
-                                append("\n")
-
-                                for (i in 0..expData.size - 1) {
-                                    if (i == expData.size - 2) continue
-                                    append(expData[i])
+                                if (!charWorldInfo.isNullOrBlank()) {
+                                    append(charWorldInfo)
                                     append("\n")
                                 }
-
+                                expData.forEach {
+                                    append(it)
+                                    append("\n")
+                                }
                                 append(levelUpEstimateMsg)
                             }
                         }
