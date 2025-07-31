@@ -7,4 +7,5 @@ interface BasicService {
     fun ssammu(): ResponseDto
     fun joa(text: String): ResponseDto
     fun poten(): ResponseDto
+    fun patch(): ResponseDto
 }

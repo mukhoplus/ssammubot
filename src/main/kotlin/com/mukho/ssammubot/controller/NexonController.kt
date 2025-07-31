@@ -53,4 +53,13 @@ class NexonController(private val nexonService: NexonService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/levelup")
+    fun levelUp(@RequestParam characterName: String, @RequestParam targetLevel: Int?): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.levelUp(characterName, targetLevel))
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }

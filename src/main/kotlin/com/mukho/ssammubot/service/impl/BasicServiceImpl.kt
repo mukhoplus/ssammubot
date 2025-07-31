@@ -28,9 +28,11 @@ class BasicServiceImpl(
                 /직업추천 : 랜덤 직업 추천
                 /정보 [유저명] : 유저 정보 출력
                 /경험치히스토리 [유저명] : 경험치 히스토리 출력
+                /레벨업 [유저명] ([목표레벨]) : 목표 레벨에 도달하는 예상 날짜 출력
                 /잠재 : 잠재능력 시뮬레이터 링크
                 /심볼 [유저명] : 유저의 장착 심볼 정보 출력
                 /어빌 [유저명] : 유저의 어빌리티 정보 출력
+                /패치 : 최근 패치 내역 출력
             """.trimIndent()
 
             val result = ResponseDto(message)
@@ -98,6 +100,33 @@ class BasicServiceImpl(
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("poten", parameters, null, processingTime, e.message)
+            throw e
+        }
+    }
+
+    override fun patch(): ResponseDto {
+        val startTime = System.currentTimeMillis()
+        val parameters = emptyMap<String, Any>()
+
+        return try {
+            val message = """★★★ 쌈무봇 최근 패치 내역 ★★★
+v1.0.9(2025-08-01)
+  - '레벨업 예상 날짜 계산' 기능 추가
+  - '경험치 히스토리' 기능 개선
+v1.0.8(2025-07-27)
+  - '잠재능력 시뮬레이터 바로가기' 기능 추가
+  - '심볼 정보' 기능 추가
+  - '어빌리티 정보' 기능 추가"""
+            
+            val result = ResponseDto(message)
+
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("patch", parameters, result, processingTime)
+
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("patch", parameters, null, processingTime, e.message)
             throw e
         }
     }

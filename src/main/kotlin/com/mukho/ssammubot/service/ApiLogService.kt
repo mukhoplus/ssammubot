@@ -4,7 +4,7 @@ interface ApiLogService {
     
     fun logApiCall(
         apiName: String,
-        parameters: Map<String, Any>,
+        parameters: Map<String, Any?>,
         result: Any?,
         processingTime: Long,
         error: String? = null
