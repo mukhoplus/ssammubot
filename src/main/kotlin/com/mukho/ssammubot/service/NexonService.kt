@@ -8,4 +8,5 @@ interface NexonService {
     fun history(characterName: String): ResponseDto
     fun symbol(characterName: String): ResponseDto
     fun abil(characterName: String): ResponseDto
+    fun levelUp(characterName: String, targetLevel: Int? = null): ResponseDto
 }

@@ -43,6 +43,49 @@ class RedisServiceImpl(
         return redisTemplate.opsForHash<String, String>().get(key, characterName)
     }
 
+    override fun saveLevelExp(characterName: String, date: String, level: Int, exp: Long) {
+        val levelKey = "level:$date"
+        val expKey = "exp:$date"
+        val duration = getDuration(date)
+
+        redisTemplate.opsForHash<String, String>().put(levelKey, characterName, level.toString())
+        redisTemplate.expire(levelKey, duration)
+        
+        redisTemplate.opsForHash<String, String>().put(expKey, characterName, exp.toString())
+        redisTemplate.expire(expKey, duration)
+    }
+
+    override fun getLevelExp(characterName: String, date: String): Pair<Int, Long>? {
+        val levelKey = "level:$date"
+        val expKey = "exp:$date"
+        
+        val levelStr = redisTemplate.opsForHash<String, String>().get(levelKey, characterName)
+        val expStr = redisTemplate.opsForHash<String, String>().get(expKey, characterName)
+        
+        return if (levelStr != null && expStr != null) {
+            try {
+                Pair(levelStr.toInt(), expStr.toLong())
+            } catch (e: NumberFormatException) {
+                null
+            }
+        } else {
+            null
+        }
+    }
+
+    override fun getLevelExpHistory(characterName: String, dates: List<String>): List<Pair<Int, Long>> {
+        val result = mutableListOf<Pair<Int, Long>>()
+        
+        for (date in dates) {
+            val levelExp = getLevelExp(characterName, date)
+            if (levelExp != null) {
+                result.add(levelExp)
+            }
+        }
+        
+        return result
+    }
+
     fun getDuration(date: String): Duration {
         val diff = ChronoUnit.DAYS.between(LocalDate.parse(date), LocalDate.now())
         return Duration.ofDays((historyTTL.toDays() - diff).coerceAtLeast(1))
