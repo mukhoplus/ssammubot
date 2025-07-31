@@ -47,4 +47,13 @@ class BasicController(private val basicService: BasicService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/patch")
+    fun patch(): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(basicService.patch())
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }

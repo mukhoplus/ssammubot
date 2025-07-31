@@ -4,12 +4,15 @@ import com.mukho.ssammubot.model.*
 import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.NexonService
 import com.mukho.ssammubot.service.RedisService
+import com.mukho.ssammubot.utils.ExperienceUtil
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import reactor.core.publisher.Mono
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import kotlin.compareTo
+import kotlin.math.ceil
 
 @Service("nexonService")
 class NexonServiceImpl(
@@ -99,10 +102,8 @@ class NexonServiceImpl(
     override fun history(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
-        
         return try {
             val ocid = fetchOcid(characterName)
-            
             val result = when {
                 ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
                 ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
@@ -110,40 +111,21 @@ class NexonServiceImpl(
                 ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
                 else -> {
                     try {
-                        val expData: MutableList<String> = mutableListOf()
-                        val lastWeekDates: List<String> = getLastWeekDates()
-
+                        val lastWeekDates = getLastWeekDates()
                         val now = LocalDateTime.now()
                         val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
-
+                        val expData: MutableList<String> = mutableListOf()
                         var isValidId = true
+                        var currentLevel = 0
+                        var currentExp = 0L
 
+                        // expData(출력용) - 캐릭터명/월드, 레벨/퍼센트 등 기존 방식 유지
                         for (date in lastWeekDates) {
-                            // 오늘(갱신 전 실시간) 데이터는 API 호출, Redis에 저장하지 않음
-                            if ( (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today)
-                                || (now.hour >= 6 && date == today) ) { // 내일 날짜와 비교
-                                val characterBasic = getHistory(ocid, date).block()
-                                if (characterBasic.isNullOrEmpty()) continue
-
-                                if (characterBasic.size == 1) {
-                                    if (characterBasic[0].startsWith("2023년")) {
-                                        isValidId = false
-                                        break
-                                    }
-                                }
-
-                                expData.add(0, characterBasic[0])
-                                expData.add(characterBasic[1])
-                                continue
-                            }
-
                             val cachedCharacterBasic: String? = redisService.getHistory(characterName, date)
-
                             if (cachedCharacterBasic != null) {
                                 expData.add(cachedCharacterBasic)
                             } else {
                                 val characterBasic: List<String>? = getHistory(ocid, date).block()
-
                                 if (!characterBasic.isNullOrEmpty()) {
                                     if (characterBasic.size == 1) {
                                         if (characterBasic[0].startsWith("2023년")) {
@@ -151,12 +133,35 @@ class NexonServiceImpl(
                                             break
                                         }
                                     }
-
+                                    // characterBasic[0]: 캐릭터명-월드, characterBasic[1]: 레벨/퍼센트
+                                    expData.add(characterBasic[0])
                                     expData.add(characterBasic[1])
                                 }
                             }
                         }
 
+                        // 레벨업 계산용 경험치 이력 (공통화 함수 사용)
+                        val levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
+                        if (levelExpHistory.isNotEmpty()) {
+                            val (curLevel, curExp) = levelExpHistory.last()
+                            currentLevel = curLevel
+                            currentExp = curExp
+                        }
+
+                        // --- 예상 레벨업 날짜 추가 ---
+                        var levelUpEstimateMsg = ""
+                        if (levelExpHistory.size >= 2) {
+                            val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
+                            val (curLevel, curExp) = levelExpHistory.last()
+                            val expToNext = ExperienceUtil.getExpToNextLevel(curLevel, curExp)
+                            if (avgExpGain > 0 && expToNext > 0) {
+                                val days = ceil((expToNext).toDouble() / avgExpGain).toInt()
+                                val targetDate = LocalDate.now().plusDays(days.toLong())
+                                val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+                                levelUpEstimateMsg = "예상 레벨업 날짜 : $formattedDate(${days}일 후)"
+                            }
+                        }
+                        // --- 메시지 조립 ---
                         val message = buildString {
                             if (expData.isEmpty()) {
                                 if (isValidId) {
@@ -165,24 +170,26 @@ class NexonServiceImpl(
                                     append("2023년 12월 21일 이후의 접속 기록이 없습니다.")
                                 }
                             } else {
-                                for (i in 0 .. expData.size - 2) {
+                                append(expData[expData.size - 2]) // 캐릭터명 - 월드
+                                append("\n")
+
+                                for (i in 0..expData.size - 1) {
+                                    if (i == expData.size - 2) continue
                                     append(expData[i])
                                     append("\n")
                                 }
-                                append(expData[expData.size - 1])
+
+                                append(levelUpEstimateMsg)
                             }
                         }
-
                         ResponseDto(message)
                     } catch (e: Exception) {
                         ResponseDto("API 오류 발생")
                     }
                 }
             }
-            
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("history", parameters, result, processingTime)
-            
             result
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
@@ -253,6 +260,85 @@ class NexonServiceImpl(
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("abil", parameters, null, processingTime, e.message)
+            throw e
+        }
+    }
+
+    override fun levelUp(
+        characterName: String,
+        targetLevel: Int?
+    ): ResponseDto {
+        val startTime = System.currentTimeMillis()
+        var actualTargetLevel = targetLevel
+        val parameters: Map<String, Any?> = mapOf("characterName" to characterName, "targetLevel" to targetLevel)
+        return try {
+            val ocid = fetchOcid(characterName)
+            if (ocid.startsWith("닉네임을 다시 확인해주세요") || ocid.startsWith("API 오류 발생") || ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") || ocid.startsWith("Nexon API 서버 오류 발생")) {
+                return ResponseDto(ocid)
+            }
+
+            val lastWeekDates = getLastWeekDates()
+            val levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
+            if (levelExpHistory.isEmpty()) {
+                return ResponseDto("최근 경험치 데이터가 없습니다.")
+            }
+
+            val (curLevel, curExp) = levelExpHistory.last()
+            val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
+
+            // 캐릭터명 - 월드 정보 추출 (가장 최근 날짜)
+            val lastDate = lastWeekDates.last()
+            val charWorldInfo = getHistory(ocid, lastDate).block()?.getOrNull(0) ?: ""
+
+            // targetLevel이 null이면 다음 레벨로 자동 설정
+            if (actualTargetLevel == null) {
+                if (curLevel >= 300) {
+                    return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
+                }
+                actualTargetLevel = curLevel + 1
+            }
+
+            // 예외처리: 300 초과, 현재 레벨 이하
+            if (curLevel >= 300) {
+                return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
+            }
+            if (actualTargetLevel > 300) {
+                return ResponseDto("목표 레벨이 300을 초과합니다.")
+            }
+            if (actualTargetLevel <= curLevel) {
+                return ResponseDto("목표 레벨이 현재 레벨보다 낮거나 같습니다.")
+            }
+            if (avgExpGain <= 0) {
+                return ResponseDto("$charWorldInfo\n경험치 증가량이 없어 예상 날짜를 계산할 수 없습니다.")
+            }
+
+            val requiredExp = ExperienceUtil.getExpToTargetLevel(curLevel, curExp, actualTargetLevel)
+            val estimatedDays = ceil(requiredExp.toDouble() / avgExpGain).toLong()
+            val (dateMsg, daysMsg) = if (estimatedDays > 100000) {
+                "예상 불가" to "(예상 소요 기간이 10만 일 이상입니다.)"
+            } else {
+                val targetDate = LocalDate.now().plusDays(estimatedDays)
+                val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+                formattedDate to "(${estimatedDays}일 후)"
+            }
+
+
+            val message = buildString {
+                if (charWorldInfo.isNotBlank()) {
+                    append("$charWorldInfo\n")
+                }
+                append("현재 레벨: $curLevel\n")
+                append("목표 레벨: $actualTargetLevel\n")
+                append("예상 달성 날짜: $dateMsg$daysMsg")
+            }
+
+            val result = ResponseDto(message)
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("levelUp", parameters, result, processingTime)
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("levelUp", parameters, null, processingTime, e.message)
             throw e
         }
     }
@@ -415,22 +501,28 @@ class NexonServiceImpl(
                                 || dto.world_name.isNullOrEmpty()
                                 || dto.character_level == null
                                 || dto.character_exp_rate == null
+                                || dto.character_exp == null
                             ) {
                                 Mono.just(emptyList()) // 유효하지 않은 데이터 → 빈 리스트 반환
                             } else {
                                 val characterInfo = "${dto.character_name} - ${dto.world_name}"
                                 val formattedDate = LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MM월 dd일"))
                                 val levelInfo = "Lv.${dto.character_level} ${dto.character_exp_rate}%"
+                                val level = dto.character_level.toInt()
+                                val exp = dto.character_exp.toLong()
 
                                 // 캐싱 조건 검사 (오늘 데이터 제외)
                                 val isSpecialCase =
                                     (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
                                             (now.hour >= 6 && date == today)
                                 if (!isSpecialCase) {
+                                    // 기존 방식: 퍼센테이지 저장
                                     redisService.saveHistory(dto.character_name, date, "$formattedDate : $levelInfo")
+                                    // 신규 방식: 레벨/실제경험치 저장 (character_level, character_exp)
+                                    redisService.saveLevelExp(dto.character_name, date, level, exp)
                                 }
 
-                                Mono.just(listOf(characterInfo, "$formattedDate : $levelInfo"))
+                                Mono.just(listOf(characterInfo, "$formattedDate : $levelInfo",  level.toString(), exp.toString()))
                             }
                         }
                 } else {
@@ -588,5 +680,31 @@ class NexonServiceImpl(
                 }
             }
         }
+    }
+
+    /**
+     * 최근 N일간 (레벨, 경험치) 이력 조회 (redis 우선, 없으면 api 호출 후 redis 저장)
+     */
+    private fun getOrFetchLevelExpHistory(characterName: String, ocid: String, dates: List<String>): List<Pair<Int, Long>> {
+        val result = mutableListOf<Pair<Int, Long>>()
+        
+        for (date in dates) {
+            val redisData = redisService.getLevelExp(characterName, date)
+            if (redisData != null) {
+                result.add(redisData)
+                continue
+            }
+            // redis에 없으면 api 호출 후 redis 저장
+            val apiData = getHistory(ocid, date).block()
+            if (apiData != null && apiData.size >= 4) {
+                val level = apiData[2].toIntOrNull()
+                val exp = apiData[3].toLongOrNull()
+                if (level != null && exp != null) {
+                    redisService.saveLevelExp(characterName, date, level, exp)
+                    result.add(Pair(level, exp))
+                }
+            }
+        }
+        return result
     }
 }
