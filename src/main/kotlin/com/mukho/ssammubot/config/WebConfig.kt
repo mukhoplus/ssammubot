@@ -13,7 +13,7 @@ class WebConfig(
     
     override fun addCorsMappings(registry: CorsRegistry) {
         registry.addMapping("/**")
-            .allowedOriginPatterns("https://smweb.mukho.r-e.kr", "http://localhost:5173", "http://localhost:8080")
+            .allowedOriginPatterns("https://smweb.mukho.r-e.kr", "https://ssammubot.vercel.app/", "http://localhost:5173", "http://localhost:8080")
             .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
             .allowedHeaders("*")
             .allowCredentials(true)
