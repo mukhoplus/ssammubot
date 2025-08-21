@@ -68,6 +68,7 @@ class NexonServiceImpl(
                                 
                                 // 각 결과에 대한 에러 처리
                                 when {
+                                    infoResult.startsWith("정보 - 서버 점검 중에는 이용 불가합니다.") -> "정보 - 서버 점검 중에는 이용 불가합니다."
                                     infoResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
                                     infoResult.startsWith("API 오류 발생") -> "API 오류 발생"
                                     infoResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
@@ -406,7 +407,14 @@ class NexonServiceImpl(
                                 """.trimIndent()
                             }
                     }
-                    400 -> Mono.just("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                    400 -> response.bodyToMono(ErrorMessageDto::class.java)
+                        .map { error ->
+                            if (error.error.name == "OPENAPI00010") {
+                                "정보 - 서버 점검 중에는 이용 불가합니다."
+                            } else {
+                                "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                            }
+                        }
                     403 -> Mono.just("API 오류 발생")
                     429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
                     500 -> Mono.just("Nexon API 서버 오류 발생")
@@ -529,7 +537,14 @@ class NexonServiceImpl(
                             }
                         }
                 } else {
-                    Mono.just(listOf("2023년 12월 21일 이후의 접속 기록이 없습니다."))
+                    response.bodyToMono(ErrorMessageDto::class.java)
+                        .flatMap { error ->
+                            if (error.error.name == "OPENAPI00010") {
+                                Mono.just(listOf("정보 - 서버 점검 중에는 이용 불가합니다."))
+                            } else {
+                                Mono.just(listOf("2023년 12월 21일 이후의 접속 기록이 없습니다."))
+                            }
+                        }
                 }
             }
             .onErrorResume {
