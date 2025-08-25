@@ -331,9 +331,9 @@ class NexonServiceImpl(
                 if (charWorldInfo.isNotBlank()) {
                     append("$charWorldInfo\n")
                 }
-                append("현재 레벨: $curLevel\n")
-                append("목표 레벨: $actualTargetLevel\n")
-                append("예상 달성 날짜: $dateMsg$daysMsg")
+                append("현재 레벨 : $curLevel\n")
+                append("목표 레벨 : $actualTargetLevel\n")
+                append("예상 달성 날짜 : $dateMsg$daysMsg")
             }
 
             val result = ResponseDto(message)
