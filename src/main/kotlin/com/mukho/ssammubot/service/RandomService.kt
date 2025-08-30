@@ -5,7 +5,8 @@ import com.mukho.ssammubot.model.VsDto
 
 interface RandomService {
     fun food(): ResponseDto
-    fun classRecommand(): ResponseDto
+    fun classRecommend(): ResponseDto
     fun vs(vsDto: VsDto): ResponseDto
     fun dice(): ResponseDto
+    fun playlist(): ResponseDto
 }

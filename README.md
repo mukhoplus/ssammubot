@@ -66,6 +66,10 @@ Kakaotalk Open Chatting Bot using MapleStory API
 
 - `/시뮬` 로 **잠재능력 시뮬레이터** 링크 출력
 
+### 플리
+
+- `/플리` 로 재획할 때 들을 만한 플레이리스트 링크 출력
+
 ## 기술 스택
 
 - Kotlin
