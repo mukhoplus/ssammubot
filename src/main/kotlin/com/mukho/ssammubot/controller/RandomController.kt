@@ -26,7 +26,7 @@ class RandomController(private val randomService: RandomServiceImpl) {
     @GetMapping("/class")
     fun classRecommand(): ResponseEntity<ResponseDto> {
         return try {
-            ResponseEntity.ok(randomService.classRecommand())
+            ResponseEntity.ok(randomService.classRecommend())
         } catch (e: Exception) {
             ResponseEntity.internalServerError().build()
         }
@@ -45,6 +45,15 @@ class RandomController(private val randomService: RandomServiceImpl) {
     fun dice(): ResponseEntity<ResponseDto> {
         return try {
             ResponseEntity.ok(randomService.dice())
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
+
+    @GetMapping("/playlist")
+    fun playlist(): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(randomService.playlist())
         } catch (e: Exception) {
             ResponseEntity.internalServerError().build()
         }
