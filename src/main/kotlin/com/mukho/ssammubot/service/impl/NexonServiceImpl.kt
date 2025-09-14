@@ -61,7 +61,7 @@ class NexonServiceImpl(
                 ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
                 else -> {
                     try {
-                        val result = Mono.zip(getInfo(ocid), getStat(ocid))
+                        val result = Mono.zip(getInfo(ocid, characterName), getStat(ocid, characterName))
                             .map { tuple ->
                                 val infoResult = tuple.t1
                                 val statResult = tuple.t2
@@ -127,12 +127,12 @@ class NexonServiceImpl(
                             if (cachedCharacterBasic != null) {
                                 // 캐릭터명-월드 정보는 첫 번째 캐시에서만 추출
                                 if (charWorldInfo == null) {
-                                    val historyFromApi = getHistory(ocid, date).block()
+                                    val historyFromApi = getHistory(ocid, date, characterName).block()
                                     charWorldInfo = historyFromApi?.getOrNull(0) ?: ""
                                 }
                                 expData.add(cachedCharacterBasic)
                             } else {
-                                val characterBasic: List<String>? = getHistory(ocid, date).block()
+                                val characterBasic: List<String>? = getHistory(ocid, date, characterName).block()
                                 if (!characterBasic.isNullOrEmpty()) {
                                     if (characterBasic.size == 1) {
                                         if (characterBasic[0].startsWith("2023년")) {
@@ -296,7 +296,7 @@ class NexonServiceImpl(
 
             // 캐릭터명 - 월드 정보 추출 (가장 최근 날짜)
             val lastDate = lastWeekDates.last()
-            val charWorldInfo = getHistory(ocid, lastDate).block()?.getOrNull(0) ?: ""
+            val charWorldInfo = getHistory(ocid, lastDate, characterName).block()?.getOrNull(0) ?: ""
 
             // targetLevel이 null이면 다음 레벨로 자동 설정
             if (actualTargetLevel == null) {
@@ -347,6 +347,17 @@ class NexonServiceImpl(
         }
     }
 
+    private fun invalidateOcidIfNeeded(characterName: String, errorName: String?) {
+        if (errorName == "OPENAPI00003") {
+            try {
+                redisService.deleteOcid(characterName)
+            } catch (e: Exception) {
+                // Redis 삭제 실패 시 로그만 출력하고 계속 진행
+                println("Redis OCID 삭제 실패: ${e.message}")
+            }
+        }
+    }
+
     private fun fetchOcid(characterName: String): String {
         val cachedOcid = try {
             redisService.getOcid(characterName)
@@ -391,7 +402,7 @@ class NexonServiceImpl(
         }
     }
 
-    fun getInfo(ocid: String): Mono<String> {
+    fun getInfo(ocid: String, characterName: String? = null): Mono<String> {
         return webClient.get()
             .uri("/character/basic?ocid=$ocid")
             .exchangeToMono { response ->
@@ -409,10 +420,16 @@ class NexonServiceImpl(
                     }
                     400 -> response.bodyToMono(ErrorMessageDto::class.java)
                         .map { error ->
-                            if (error.error.name == "OPENAPI00010") {
-                                "정보 - 서버 점검 중에는 이용 불가합니다."
-                            } else {
-                                "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                            when (error.error.name) {
+                                "OPENAPI00010" -> "정보 - 서버 점검 중에는 이용 불가합니다."
+                                "OPENAPI00003" -> {
+                                    // OCID 무효화 처리
+                                    if (!characterName.isNullOrBlank()) {
+                                        invalidateOcidIfNeeded(characterName, error.error.name)
+                                    }
+                                    "닉네임을 다시 확인해주세요"
+                                }
+                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
                             }
                         }
                     403 -> Mono.just("API 오류 발생")
@@ -431,7 +448,7 @@ class NexonServiceImpl(
             }
     }
 
-    fun getStat(ocid: String): Mono<String> {
+    fun getStat(ocid: String, characterName: String? = null): Mono<String> {
         return webClient.get()
             .uri("/character/stat?ocid=$ocid")
             .exchangeToMono { response ->
@@ -459,7 +476,19 @@ class NexonServiceImpl(
                                 }
                             }
                     }
-                    400 -> Mono.just("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                    400 -> response.bodyToMono(ErrorMessageDto::class.java)
+                        .map { error ->
+                            when (error.error.name) {
+                                "OPENAPI00003" -> {
+                                    // OCID 무효화 처리
+                                    if (!characterName.isNullOrBlank()) {
+                                        invalidateOcidIfNeeded(characterName, error.error.name)
+                                    }
+                                    "닉네임을 다시 확인해주세요"
+                                }
+                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                            }
+                        }
                     403 -> Mono.just("API 오류 발생")
                     429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
                     500 -> Mono.just("Nexon API 서버 오류 발생")
@@ -491,7 +520,7 @@ class NexonServiceImpl(
         return ((startDay + 6) downTo startDay).map { getDate(it) }
     }
 
-    fun getHistory(ocid: String, date: String): Mono<List<String>> {
+    fun getHistory(ocid: String, date: String, characterName: String? = null): Mono<List<String>> {
         val now = LocalDateTime.now()
         val today = getDate(0)
 
@@ -539,10 +568,16 @@ class NexonServiceImpl(
                 } else {
                     response.bodyToMono(ErrorMessageDto::class.java)
                         .flatMap { error ->
-                            if (error.error.name == "OPENAPI00010") {
-                                Mono.just(listOf("정보 - 서버 점검 중에는 이용 불가합니다."))
-                            } else {
-                                Mono.just(listOf("2023년 12월 21일 이후의 접속 기록이 없습니다."))
+                            when (error.error.name) {
+                                "OPENAPI00010" -> Mono.just(listOf("정보 - 서버 점검 중에는 이용 불가합니다."))
+                                "OPENAPI00003" -> {
+                                    // OCID 무효화 처리
+                                    if (!characterName.isNullOrBlank()) {
+                                        invalidateOcidIfNeeded(characterName, error.error.name)
+                                    }
+                                    Mono.just(listOf("닉네임을 다시 확인해주세요"))
+                                }
+                                else -> Mono.just(listOf("2023년 12월 21일 이후의 접속 기록이 없습니다."))
                             }
                         }
                 }
@@ -567,7 +602,17 @@ class NexonServiceImpl(
                                 }
                             }
                     }
-                    400 -> Mono.just("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                    400 -> response.bodyToMono(ErrorMessageDto::class.java)
+                        .map { error ->
+                            when (error.error.name) {
+                                "OPENAPI00003" -> {
+                                    // OCID 무효화 처리
+                                    invalidateOcidIfNeeded(characterName, error.error.name)
+                                    "닉네임을 다시 확인해주세요"
+                                }
+                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                            }
+                        }
                     403 -> Mono.just("API 오류 발생")
                     429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
                     500 -> Mono.just("Nexon API 서버 오류 발생")
@@ -648,7 +693,17 @@ class NexonServiceImpl(
                                 formatAbilityInfo(characterName, dto)
                             }
                     }
-                    400 -> Mono.just("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                    400 -> response.bodyToMono(ErrorMessageDto::class.java)
+                        .map { error ->
+                            when (error.error.name) {
+                                "OPENAPI00003" -> {
+                                    // OCID 무효화 처리
+                                    invalidateOcidIfNeeded(characterName, error.error.name)
+                                    "닉네임을 다시 확인해주세요"
+                                }
+                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                            }
+                        }
                     403 -> Mono.just("API 오류 발생")
                     429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
                     500 -> Mono.just("Nexon API 서버 오류 발생")
@@ -713,7 +768,7 @@ class NexonServiceImpl(
                 continue
             }
             // redis에 없으면 api 호출 (오늘/0~6시 특수 케이스는 redis 저장 X)
-            val apiData = getHistory(ocid, date).block()
+            val apiData = getHistory(ocid, date, characterName).block()
             if (apiData != null && apiData.size >= 4) {
                 val level = apiData[2].toIntOrNull()
                 val exp = apiData[3].toLongOrNull()
