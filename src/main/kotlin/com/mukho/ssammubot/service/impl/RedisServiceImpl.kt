@@ -30,6 +30,11 @@ class RedisServiceImpl(
         return ocid
     }
 
+    override fun deleteOcid(characterName: String) {
+        val key = "ocid:$characterName"
+        redisTemplate.delete(key)
+    }
+
     override fun saveHistory(characterName: String, date: String, value: String) {
         val key = "history:$date"
         val duration = getDuration(date)
