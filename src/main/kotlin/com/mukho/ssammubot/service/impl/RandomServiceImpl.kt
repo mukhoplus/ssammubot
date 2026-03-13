@@ -6,6 +6,7 @@ import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.RandomService
 import com.mukho.ssammubot.utils.ClassUtil
 import com.mukho.ssammubot.utils.FoodUtil
+import com.mukho.ssammubot.utils.LottoUtil
 import com.mukho.ssammubot.utils.PlaylistUtil
 import org.springframework.stereotype.Service
 
@@ -86,6 +87,25 @@ class RandomServiceImpl(
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("dice", parameters, null, processingTime, e.message)
+            throw e
+        }
+    }
+
+    override fun lotto(): ResponseDto {
+        val startTime = System.currentTimeMillis()
+        val parameters = emptyMap<String, Any>()
+
+        return try {
+            val message = LottoUtil.generateLottoNumbers()
+            val result = ResponseDto(message)
+
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("lotto", parameters, result, processingTime)
+
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("lotto", parameters, null, processingTime, e.message)
             throw e
         }
     }

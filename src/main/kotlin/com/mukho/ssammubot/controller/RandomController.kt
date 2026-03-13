@@ -58,4 +58,13 @@ class RandomController(private val randomService: RandomServiceImpl) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/lotto")
+    fun lotto(): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(randomService.lotto())
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }
