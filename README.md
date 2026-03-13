@@ -41,6 +41,10 @@ Kakaotalk Open Chatting Bot using MapleStory API
 
 - `/주사위` 로 1~6 사이의 랜덤한 숫자 출력
 
+### 로또
+
+- `/로또` 로 랜덤한 로또 번호 출력
+
 ### 정보
 
 - `/정보` 로 캐릭터 정보 출력
