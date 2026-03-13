@@ -9,4 +9,5 @@ interface RandomService {
     fun vs(vsDto: VsDto): ResponseDto
     fun dice(): ResponseDto
     fun playlist(): ResponseDto
+    fun lotto(): ResponseDto
 }
