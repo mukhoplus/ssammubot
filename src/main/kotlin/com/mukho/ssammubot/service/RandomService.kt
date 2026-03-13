@@ -8,6 +8,6 @@ interface RandomService {
     fun classRecommend(): ResponseDto
     fun vs(vsDto: VsDto): ResponseDto
     fun dice(): ResponseDto
-    fun playlist(): ResponseDto
     fun lotto(): ResponseDto
+    fun playlist(): ResponseDto
 }
