@@ -50,19 +50,19 @@ class RandomController(private val randomService: RandomServiceImpl) {
         }
     }
 
-    @GetMapping("/playlist")
-    fun playlist(): ResponseEntity<ResponseDto> {
+    @GetMapping("/lotto")
+    fun lotto(): ResponseEntity<ResponseDto> {
         return try {
-            ResponseEntity.ok(randomService.playlist())
+            ResponseEntity.ok(randomService.lotto())
         } catch (e: Exception) {
             ResponseEntity.internalServerError().build()
         }
     }
 
-    @GetMapping("/lotto")
-    fun lotto(): ResponseEntity<ResponseDto> {
+    @GetMapping("/playlist")
+    fun playlist(): ResponseEntity<ResponseDto> {
         return try {
-            ResponseEntity.ok(randomService.lotto())
+            ResponseEntity.ok(randomService.playlist())
         } catch (e: Exception) {
             ResponseEntity.internalServerError().build()
         }
