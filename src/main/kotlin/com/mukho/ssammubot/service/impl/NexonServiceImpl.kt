@@ -21,21 +21,29 @@ class NexonServiceImpl(
     private val apiLogService: ApiLogService
 ): NexonService {
 
+    private fun isErrorResponse(ocid: String): Boolean {
+        return ocid.startsWith("닉네임을 다시 확인해주세요") ||
+               ocid.startsWith("API 오류 발생") ||
+               ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") ||
+               ocid.startsWith("Nexon API 서버 오류 발생")
+    }
+
+    private fun formatErrorMessage(ocid: String): String {
+        return if (ocid.startsWith("닉네임을 다시 확인해주세요")) "닉네임을 다시 확인해주세요." else ocid
+    }
+
     override fun scouter(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
         
         return try {
-            val ocid = fetchOcid(characterName)
+            var ocid = fetchOcid(characterName)
             
-            val result = when {
-                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
-                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-                else -> ResponseDto("https://maplescouter.com/info?name=$characterName")
+            if (isErrorResponse(ocid)) {
+                return ResponseDto(formatErrorMessage(ocid))
             }
             
+            val result = ResponseDto("https://maplescouter.com/info?name=$characterName")
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("scouter", parameters, result, processingTime)
             
@@ -52,41 +60,21 @@ class NexonServiceImpl(
         val parameters = mapOf("characterName" to characterName)
         
         return try {
-            val ocid = fetchOcid(characterName)
+            var ocid = fetchOcid(characterName)
             
-            val result = when {
-                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요")
-                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-                else -> {
-                    try {
-                        val result = Mono.zip(getInfo(ocid, characterName), getStat(ocid, characterName))
-                            .map { tuple ->
-                                val infoResult = tuple.t1
-                                val statResult = tuple.t2
-                                
-                                // 각 결과에 대한 에러 처리
-                                when {
-                                    infoResult.startsWith("정보 - 서버 점검 중에는 이용 불가합니다.") -> "정보 - 서버 점검 중에는 이용 불가합니다."
-                                    infoResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                                    infoResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                                    infoResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                                    infoResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
-                                    statResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                                    statResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                                    statResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                                    statResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
-                                    else -> infoResult + statResult
-                                }
-                            }
-                            .block() ?: "API 오류 발생"
-                            
-                        ResponseDto(result)
-                    } catch (e: Exception) {
-                        ResponseDto("API 오류 발생")
+            val result = if (isErrorResponse(ocid)) {
+                ResponseDto(formatErrorMessage(ocid))
+            } else {
+                var infoResultStr = fetchInfoResult(ocid, characterName)
+                
+                // OPENAPI00003 등으로 인해 닉네임 확인 메시지가 반환된 경우 1회 자동 재시도
+                if (infoResultStr.startsWith("닉네임을 다시 확인해주세요")) {
+                    ocid = fetchOcid(characterName, forceRefresh = true)
+                    if (!isErrorResponse(ocid)) {
+                        infoResultStr = fetchInfoResult(ocid, characterName)
                     }
                 }
+                ResponseDto(infoResultStr)
             }
             
             val processingTime = System.currentTimeMillis() - startTime
@@ -100,102 +88,52 @@ class NexonServiceImpl(
         }
     }
 
+    private fun fetchInfoResult(ocid: String, characterName: String): String {
+        return try {
+            Mono.zip(getInfo(ocid, characterName), getStat(ocid, characterName))
+                .map { tuple ->
+                    val infoResult = tuple.t1
+                    val statResult = tuple.t2
+                    
+                    when {
+                        infoResult.startsWith("닉네임을 다시 확인해주세요") -> "닉네임을 다시 확인해주세요"
+                        statResult.startsWith("닉네임을 다시 확인해주세요") -> "닉네임을 다시 확인해주세요"
+                        infoResult.startsWith("정보 - 서버 점검 중에는 이용 불가합니다.") -> "정보 - 서버 점검 중에는 이용 불가합니다."
+                        infoResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                        infoResult.startsWith("API 오류 발생") -> "API 오류 발생"
+                        infoResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
+                        infoResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
+                        statResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                        statResult.startsWith("API 오류 발생") -> "API 오류 발생"
+                        statResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
+                        statResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
+                        else -> infoResult + statResult
+                    }
+                }
+                .block() ?: "API 오류 발생"
+        } catch (e: Exception) {
+            "API 오류 발생"
+        }
+    }
+
     override fun history(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
         return try {
-            val ocid = fetchOcid(characterName)
-            val result = when {
-                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
-                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-                else -> {
-                    try {
-                        val lastWeekDates = getLastWeekDates()
-                        val now = LocalDateTime.now()
-                        val today = String.format("%04d-%02d-%02d", now.year, now.monthValue, now.dayOfMonth)
+            var ocid = fetchOcid(characterName)
+            if (isErrorResponse(ocid)) {
+                return ResponseDto(formatErrorMessage(ocid))
+            }
 
-                        val expData: MutableList<String> = mutableListOf()
-                        var isValidId = true
-                        var currentLevel = 0
-                        var currentExp = 0L
-                        var charWorldInfo: String? = null
-
-                        for (date in lastWeekDates) {
-                            val cachedCharacterBasic: String? = redisService.getHistory(characterName, date)
-                            if (cachedCharacterBasic != null) {
-                                // 캐릭터명-월드 정보는 첫 번째 캐시에서만 추출
-                                if (charWorldInfo == null) {
-                                    val historyFromApi = getHistory(ocid, date, characterName).block()
-                                    charWorldInfo = historyFromApi?.getOrNull(0) ?: ""
-                                }
-                                expData.add(cachedCharacterBasic)
-                            } else {
-                                val characterBasic: List<String>? = getHistory(ocid, date, characterName).block()
-                                if (!characterBasic.isNullOrEmpty()) {
-                                    if (characterBasic.size == 1) {
-                                        if (characterBasic[0].startsWith("2023년")) {
-                                            isValidId = false
-                                            break
-                                        }
-                                    }
-                                    // characterBasic[0]: 캐릭터명-월드, characterBasic[1]: 레벨/퍼센트
-                                    if (charWorldInfo == null) {
-                                        charWorldInfo = characterBasic[0]
-                                    }
-                                    expData.add(characterBasic[1])
-                                }
-                            }
-                        }
-
-                        // 레벨업 계산용 경험치 이력 (공통화 함수 사용)
-                        val levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
-                        if (levelExpHistory.isNotEmpty()) {
-                            val (curLevel, curExp) = levelExpHistory.last()
-                            currentLevel = curLevel
-                            currentExp = curExp
-                        }
-
-                        // --- 예상 레벨업 날짜 추가 ---
-                        var levelUpEstimateMsg = ""
-                        if (levelExpHistory.size >= 2) {
-                            val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
-                            val (curLevel, curExp) = levelExpHistory.last()
-                            val expToNext = ExperienceUtil.getExpToNextLevel(curLevel, curExp)
-                            if (avgExpGain > 0 && expToNext > 0) {
-                                val days = ceil((expToNext).toDouble() / avgExpGain).toInt()
-                                val targetDate = LocalDate.now().plusDays(days.toLong())
-                                val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
-                                levelUpEstimateMsg = "예상 레벨업 날짜 : $formattedDate(${days}일 후)"
-                            }
-                        }
-                        // --- 메시지 조립 ---
-                        val message = buildString {
-                            if (expData.isEmpty()) {
-                                if (isValidId) {
-                                    append("히스토리 데이터가 없습니다.")
-                                } else {
-                                    append("2023년 12월 21일 이후의 접속 기록이 없습니다.")
-                                }
-                            } else {
-                                if (!charWorldInfo.isNullOrBlank()) {
-                                    append(charWorldInfo)
-                                    append("\n")
-                                }
-                                expData.forEach {
-                                    append(it)
-                                    append("\n")
-                                }
-                                append(levelUpEstimateMsg)
-                            }
-                        }
-                        ResponseDto(message)
-                    } catch (e: Exception) {
-                        ResponseDto("API 오류 발생")
-                    }
+            var historyStr = fetchHistoryResult(ocid, characterName)
+            if (historyStr.startsWith("닉네임을 다시 확인해주세요")) {
+                ocid = fetchOcid(characterName, forceRefresh = true)
+                if (!isErrorResponse(ocid)) {
+                    historyStr = fetchHistoryResult(ocid, characterName)
                 }
             }
+
+            val result = ResponseDto(historyStr)
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("history", parameters, result, processingTime)
             result
@@ -206,28 +144,100 @@ class NexonServiceImpl(
         }
     }
 
+    private fun fetchHistoryResult(ocid: String, characterName: String): String {
+        return try {
+            val lastWeekDates = getLastWeekDates()
+            val expData: MutableList<String> = mutableListOf()
+            var isValidId = true
+            var charWorldInfo: String? = null
+
+            for (date in lastWeekDates) {
+                val cachedCharacterBasic: String? = redisService.getHistory(characterName, date)
+                if (cachedCharacterBasic != null) {
+                    if (charWorldInfo == null) {
+                        val historyFromApi = getHistory(ocid, date, characterName).block()
+                        charWorldInfo = historyFromApi?.getOrNull(0) ?: ""
+                    }
+                    expData.add(cachedCharacterBasic)
+                } else {
+                    val characterBasic: List<String>? = getHistory(ocid, date, characterName).block()
+                    if (!characterBasic.isNullOrEmpty()) {
+                        if (characterBasic.size == 1) {
+                            if (characterBasic[0].startsWith("닉네임을 다시 확인해주세요")) {
+                                return "닉네임을 다시 확인해주세요"
+                            }
+                            if (characterBasic[0].startsWith("2023년")) {
+                                isValidId = false
+                                break
+                            }
+                        }
+                        if (charWorldInfo == null) {
+                            charWorldInfo = characterBasic[0]
+                        }
+                        expData.add(characterBasic[1])
+                    }
+                }
+            }
+
+            val levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
+
+            var levelUpEstimateMsg = ""
+            if (levelExpHistory.size >= 2) {
+                val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
+                val (curLevel, curExp) = levelExpHistory.last()
+                val expToNext = ExperienceUtil.getExpToNextLevel(curLevel, curExp)
+                if (avgExpGain > 0 && expToNext > 0) {
+                    val days = ceil((expToNext).toDouble() / avgExpGain).toInt()
+                    val targetDate = LocalDate.now().plusDays(days.toLong())
+                    val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+                    levelUpEstimateMsg = "예상 레벨업 날짜 : $formattedDate(${days}일 후)"
+                }
+            }
+
+            buildString {
+                if (expData.isEmpty()) {
+                    if (isValidId) {
+                        append("히스토리 데이터가 없습니다.")
+                    } else {
+                        append("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                    }
+                } else {
+                    if (!charWorldInfo.isNullOrBlank()) {
+                        append(charWorldInfo)
+                        append("\n")
+                    }
+                    expData.forEach {
+                        append(it)
+                        append("\n")
+                    }
+                    append(levelUpEstimateMsg)
+                }
+            }
+        } catch (e: Exception) {
+            "API 오류 발생"
+        }
+    }
+
     override fun symbol(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
         
         return try {
-            val ocid = fetchOcid(characterName)
+            var ocid = fetchOcid(characterName)
             
-            val result = when {
-                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
-                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-                else -> {
-                    try {
-                        val symbolResult = getSymbol(characterName, ocid).block() ?: "API 오류 발생"
-                        ResponseDto(symbolResult)
-                    } catch (e: Exception) {
-                        ResponseDto("API 오류 발생")
-                    }
+            if (isErrorResponse(ocid)) {
+                return ResponseDto(formatErrorMessage(ocid))
+            }
+
+            var symbolResult = getSymbol(characterName, ocid).block() ?: "API 오류 발생"
+            if (symbolResult.startsWith("닉네임을 다시 확인해주세요")) {
+                ocid = fetchOcid(characterName, forceRefresh = true)
+                if (!isErrorResponse(ocid)) {
+                    symbolResult = getSymbol(characterName, ocid).block() ?: "API 오류 발생"
                 }
             }
             
+            val result = ResponseDto(symbolResult)
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("symbol", parameters, result, processingTime)
             
@@ -244,23 +254,21 @@ class NexonServiceImpl(
         val parameters = mapOf("characterName" to characterName)
         
         return try {
-            val ocid = fetchOcid(characterName)
+            var ocid = fetchOcid(characterName)
             
-            val result = when {
-                ocid.startsWith("닉네임을 다시 확인해주세요") -> ResponseDto("닉네임을 다시 확인해주세요.")
-                ocid.startsWith("API 오류 발생") -> ResponseDto("API 오류 발생")
-                ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") -> ResponseDto("사용량이 많습니다. 다시 시도해주세요.")
-                ocid.startsWith("Nexon API 서버 오류 발생") -> ResponseDto("Nexon API 서버 오류 발생")
-                else -> {
-                    try {
-                        val abilityResult = getAbility(characterName, ocid).block() ?: "API 오류 발생"
-                        ResponseDto(abilityResult)
-                    } catch (e: Exception) {
-                        ResponseDto("API 오류 발생")
-                    }
+            if (isErrorResponse(ocid)) {
+                return ResponseDto(formatErrorMessage(ocid))
+            }
+            
+            var abilityResult = getAbility(characterName, ocid).block() ?: "API 오류 발생"
+            if (abilityResult.startsWith("닉네임을 다시 확인해주세요")) {
+                ocid = fetchOcid(characterName, forceRefresh = true)
+                if (!isErrorResponse(ocid)) {
+                    abilityResult = getAbility(characterName, ocid).block() ?: "API 오류 발생"
                 }
             }
             
+            val result = ResponseDto(abilityResult)
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("abil", parameters, result, processingTime)
             
@@ -280,13 +288,20 @@ class NexonServiceImpl(
         var actualTargetLevel = targetLevel
         val parameters: Map<String, Any?> = mapOf("characterName" to characterName, "targetLevel" to targetLevel)
         return try {
-            val ocid = fetchOcid(characterName)
-            if (ocid.startsWith("닉네임을 다시 확인해주세요") || ocid.startsWith("API 오류 발생") || ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") || ocid.startsWith("Nexon API 서버 오류 발생")) {
-                return ResponseDto(ocid)
+            var ocid = fetchOcid(characterName)
+            if (isErrorResponse(ocid)) {
+                return ResponseDto(formatErrorMessage(ocid))
             }
 
             val lastWeekDates = getLastWeekDates()
-            val levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
+            var levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
+            if (levelExpHistory.isEmpty()) {
+                ocid = fetchOcid(characterName, forceRefresh = true)
+                if (!isErrorResponse(ocid)) {
+                    levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
+                }
+            }
+
             if (levelExpHistory.isEmpty()) {
                 return ResponseDto("최근 경험치 데이터가 없습니다.")
             }
@@ -294,11 +309,9 @@ class NexonServiceImpl(
             val (curLevel, curExp) = levelExpHistory.last()
             val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
 
-            // 캐릭터명 - 월드 정보 추출 (가장 최근 날짜)
             val lastDate = lastWeekDates.last()
             val charWorldInfo = getHistory(ocid, lastDate, characterName).block()?.getOrNull(0) ?: ""
 
-            // targetLevel이 null이면 다음 레벨로 자동 설정
             if (actualTargetLevel == null) {
                 if (curLevel >= 300) {
                     return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
@@ -306,7 +319,6 @@ class NexonServiceImpl(
                 actualTargetLevel = curLevel + 1
             }
 
-            // 예외처리: 300 초과, 현재 레벨 이하
             if (curLevel >= 300) {
                 return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
             }
@@ -352,21 +364,28 @@ class NexonServiceImpl(
             try {
                 redisService.deleteOcid(characterName)
             } catch (e: Exception) {
-                // Redis 삭제 실패 시 로그만 출력하고 계속 진행
                 println("Redis OCID 삭제 실패: ${e.message}")
             }
         }
     }
 
-    private fun fetchOcid(characterName: String): String {
-        val cachedOcid = try {
-            redisService.getOcid(characterName)
-        } catch (e: Exception) {
-            null  // Redis 오류 시 null 반환
-        }
+    private fun fetchOcid(characterName: String, forceRefresh: Boolean = false): String {
+        if (!forceRefresh) {
+            val cachedOcid = try {
+                redisService.getOcid(characterName)
+            } catch (e: Exception) {
+                null
+            }
 
-        if (cachedOcid != null) {
-            return cachedOcid
+            if (cachedOcid != null) {
+                return cachedOcid
+            }
+        } else {
+            try {
+                redisService.deleteOcid(characterName)
+            } catch (e: Exception) {
+                println("Redis OCID 삭제 실패: ${e.message}")
+            }
         }
 
         return try {
