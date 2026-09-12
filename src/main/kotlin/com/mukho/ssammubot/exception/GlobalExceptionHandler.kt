@@ -1,4 +1,4 @@
-package com.mukho.ssammubot.controller
+package com.mukho.ssammubot.exception
 
 import com.mukho.ssammubot.model.ResponseDto
 import org.slf4j.LoggerFactory
