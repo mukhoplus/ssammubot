@@ -371,11 +371,11 @@ class NexonServiceImpl(
                 return ResponseDto(formatErrorMessage(ocid))
             }
 
-            var ringResult = fetchRingResult(ocid, characterName)
+            var ringResult = getRing(characterName, ocid).block() ?: "API 오류 발생"
             if (ringResult.startsWith("닉네임을 다시 확인해주세요")) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
                 if (!isErrorResponse(ocid)) {
-                    ringResult = fetchRingResult(ocid, characterName)
+                    ringResult = getRing(characterName, ocid).block() ?: "API 오류 발생"
                 }
             }
 
@@ -388,39 +388,6 @@ class NexonServiceImpl(
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("ring", parameters, null, processingTime, e.message)
             throw e
-        }
-    }
-
-    private fun fetchRingResult(ocid: String, characterName: String): String {
-        return try {
-            Mono.zip(getMainRing(ocid, characterName), getReserveRing(ocid, characterName))
-                .map { tuple ->
-                    val mainRingResult = tuple.t1
-                    val reserveRingResult = tuple.t2
-
-                    when {
-                        mainRingResult.startsWith("닉네임을 다시 확인해주세요") -> "닉네임을 다시 확인해주세요"
-                        reserveRingResult.startsWith("닉네임을 다시 확인해주세요") -> "닉네임을 다시 확인해주세요"
-                        mainRingResult.startsWith("정보 - 서버 점검 중에는 이용 불가합니다.") -> "정보 - 서버 점검 중에는 이용 불가합니다."
-                        reserveRingResult.startsWith("정보 - 서버 점검 중에는 이용 불가합니다.") -> "정보 - 서버 점검 중에는 이용 불가합니다."
-                        mainRingResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                        reserveRingResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                        mainRingResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                        reserveRingResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                        mainRingResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                        reserveRingResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                        mainRingResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
-                        reserveRingResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
-                        else -> """
-                            $characterName - 시드링 정보
-                            $mainRingResult
-                            $reserveRingResult
-                        """.trimIndent()
-                    }
-                }
-                .block() ?: "API 오류 발생"
-        } catch (e: Exception) {
-            "API 오류 발생"
         }
     }
 
@@ -927,7 +894,7 @@ class NexonServiceImpl(
             }
     }
 
-    private fun getMainRing(ocid: String, characterName: String? = null): Mono<String> {
+    private fun getRing(characterName: String, ocid: String): Mono<String> {
         return webClient.get()
             .uri("/character/item-equipment?ocid=$ocid")
             .exchangeToMono { response ->
@@ -935,62 +902,35 @@ class NexonServiceImpl(
                     200 -> {
                         response.bodyToMono(CharacterItemEquipmentDto::class.java)
                             .map { dto ->
-                                val seedRing = dto.item_equipment?.find {
+                                val mainRing = dto.item_equipment?.find {
                                     it.item_equipment_part == "반지" &&
+                                        it.item_equipment_slot != "예비 특수 반지" &&
                                         (it.special_ring_level?.toInt() ?: 0) in 1..6 &&
                                         !it.item_name.isNullOrBlank()
                                 }
-                                if (seedRing != null) {
-                                    "시드링: ${seedRing.item_name} Lv.${seedRing.special_ring_level}"
+                                val reserveRing = dto.item_equipment?.find {
+                                    it.item_equipment_slot == "예비 특수 반지" &&
+                                        (it.special_ring_level?.toInt() ?: 0) in 1..6 &&
+                                        !it.item_name.isNullOrBlank()
+                                }
+
+                                val mainRingStr = if (mainRing != null) {
+                                    "시드링: ${mainRing.item_name} Lv.${mainRing.special_ring_level}"
                                 } else {
                                     "시드링: 미장착"
                                 }
-                            }
-                    }
-                    400 -> response.bodyToMono(ErrorMessageDto::class.java)
-                        .map { error ->
-                            when (error.error.name) {
-                                "OPENAPI00010" -> "정보 - 서버 점검 중에는 이용 불가합니다."
-                                "OPENAPI00003" -> {
-                                    if (!characterName.isNullOrBlank()) {
-                                        invalidateOcidIfNeeded(characterName, error.error.name)
-                                    }
-                                    "닉네임을 다시 확인해주세요"
-                                }
-                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                            }
-                        }
-                    403 -> Mono.just("API 오류 발생")
-                    429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                    500 -> Mono.just("Nexon API 서버 오류 발생")
-                    else -> {
-                        response.bodyToMono(ErrorMessageDto::class.java)
-                            .flatMap {
-                                Mono.just("API 오류 발생")
-                            }
-                    }
-                }
-            }
-            .onErrorResume {
-                Mono.just("API 오류 발생")
-            }
-    }
 
-    private fun getReserveRing(ocid: String, characterName: String? = null): Mono<String> {
-        return webClient.get()
-            .uri("/character/ring-reserve-skill-equipment?ocid=$ocid")
-            .exchangeToMono { response ->
-                when (response.statusCode().value()) {
-                    200 -> {
-                        response.bodyToMono(CharacterRingReserveSkillEquipmentDto::class.java)
-                            .map { dto ->
-                                val ringName = dto.special_ring_reserve_name
-                                val ringLevel = dto.special_ring_reserve_level?.toInt() ?: 0
-                                if (!ringName.isNullOrBlank() && ringLevel in 1..6) {
-                                    "보조 시드링: $ringName Lv.$ringLevel"
+                                val reserveRingStr = if (reserveRing != null) {
+                                    "보조 시드링: ${reserveRing.item_name} Lv.${reserveRing.special_ring_level}"
                                 } else {
                                     "보조 시드링: 미장착"
                                 }
+
+                                """
+                                $characterName - 시드링 정보
+                                $mainRingStr
+                                $reserveRingStr
+                                """.trimIndent()
                             }
                     }
                     400 -> response.bodyToMono(ErrorMessageDto::class.java)
@@ -998,9 +938,7 @@ class NexonServiceImpl(
                             when (error.error.name) {
                                 "OPENAPI00010" -> "정보 - 서버 점검 중에는 이용 불가합니다."
                                 "OPENAPI00003" -> {
-                                    if (!characterName.isNullOrBlank()) {
-                                        invalidateOcidIfNeeded(characterName, error.error.name)
-                                    }
+                                    invalidateOcidIfNeeded(characterName, error.error.name)
                                     "닉네임을 다시 확인해주세요"
                                 }
                                 else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."

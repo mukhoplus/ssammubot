@@ -16,6 +16,9 @@ class WebClientConfig(
             .baseUrl("https://open.api.nexon.com/maplestory/v1")
             .defaultHeader("accept", "application/json")
             .defaultHeader("x-nxopen-api-key", "$apiKey")
+            .codecs { configurer ->
+                configurer.defaultCodecs().maxInMemorySize(2 * 1024 * 1024)
+            }
             .build()
     }
 }
