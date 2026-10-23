@@ -62,4 +62,13 @@ class NexonController(private val nexonService: NexonService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/ring")
+    fun ring(@RequestParam characterName: String): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.ring(characterName))
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }
