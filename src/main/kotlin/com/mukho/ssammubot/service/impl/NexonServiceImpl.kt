@@ -880,7 +880,7 @@ class NexonServiceImpl(
                         response.bodyToMono(UserUnionDto::class.java)
                             .map { dto ->
                                 if (dto.union_level != null && !dto.union_grade.isNullOrBlank()) {
-                                    "\n유니온: Lv.${dto.union_level} / ${dto.union_grade}\n아티팩트 레벨: ${dto.union_artifact_level ?: 0}"
+                                    "\n유니온: Lv.${dto.union_level} / ${dto.union_grade}\n아티팩트: Lv.${dto.union_artifact_level ?: 0}"
                                 } else {
                                     ""
                                 }
