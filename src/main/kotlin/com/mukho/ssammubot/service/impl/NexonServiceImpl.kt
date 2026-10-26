@@ -1005,10 +1005,11 @@ class NexonServiceImpl(
                                     invalidateOcidIfNeeded(characterName, error.error.name)
                                     "닉네임을 다시 확인해주세요"
                                 }
+                                "OPENAPI00002", "OPENAPI00005" -> "유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요."
                                 else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
                             }
                         }
-                    403 -> Mono.just("API 오류 발생")
+                    403 -> Mono.just("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.")
                     429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
                     500 -> Mono.just("Nexon API 서버 오류 발생")
                     else -> {
@@ -1051,11 +1052,9 @@ class NexonServiceImpl(
                             when (error.error.name) {
                                 "OPENAPI00010" -> "정보 - 서버 점검 중에는 이용 불가합니다."
                                 "OPENAPI00003" -> {
-                                    invalidateOcidIfNeeded(characterName, error.error.name)
                                     "닉네임을 다시 확인해주세요"
                                 }
                                 "OPENAPI00004" -> {
-                                    invalidateOcidIfNeeded(characterName, error.error.name)
                                     "자신의 계정에 속한 캐릭터만 조회가 가능합니다."
                                 }
                                 else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
@@ -1099,7 +1098,7 @@ class NexonServiceImpl(
         val limitCount = if (rawLimitCount > 0) rawLimitCount else 12
 
         return buildString {
-            append("$characterName - 보스 정보\n\n")
+            append("$characterName - 보스 정보\n")
 
             append("[주간 보스] ($clearCount/$limitCount)\n")
             if (weeklyBosses.isEmpty()) {
@@ -1112,7 +1111,7 @@ class NexonServiceImpl(
                 }
             }
 
-            append("\n[월간 보스]\n")
+            append("[월간 보스]\n")
             if (monthlyBosses.isEmpty()) {
                 append("- 등록된 항목 없음")
             } else {
@@ -1146,7 +1145,7 @@ class NexonServiceImpl(
         val accountContents = dailyAccountContents + weeklyAccountContents
 
         return buildString {
-            append("$characterName - 일퀘 정보\n\n")
+            append("$characterName - 일퀘 정보\n")
 
             append("[일일 퀘스트]\n")
             if (dailyQuests.isEmpty()) {
@@ -1158,7 +1157,7 @@ class NexonServiceImpl(
                 }
             }
 
-            append("\n[주간 퀘스트]\n")
+            append("[주간 퀘스트]\n")
             if (weeklyQuests.isEmpty()) {
                 append("- 등록된 항목 없음\n")
             } else {
@@ -1168,7 +1167,7 @@ class NexonServiceImpl(
                 }
             }
 
-            append("\n[계정 콘텐츠]\n")
+            append("[계정 콘텐츠]\n")
             if (accountContents.isEmpty()) {
                 append("- 등록된 항목 없음")
             } else {
