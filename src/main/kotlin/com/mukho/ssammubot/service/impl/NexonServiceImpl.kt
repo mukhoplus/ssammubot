@@ -40,7 +40,8 @@ class NexonServiceImpl(
             "어센틱심볼 : 도원경" to "도원경",
             "어센틱심볼 : 아르테리아" to "아르테리아",
             "어센틱심볼 : 카르시온" to "카르시온",
-            "그랜드 어센틱심볼 : 탈라하트" to "탈라하트"
+            "그랜드 어센틱심볼 : 탈라하트" to "탈라하트",
+            "그랜드 어센틱심볼 : 기어드락" to "기어드락"
         )
 
         private val BOSS_DIFFICULTY_MAP: Map<String, String> = mapOf(
