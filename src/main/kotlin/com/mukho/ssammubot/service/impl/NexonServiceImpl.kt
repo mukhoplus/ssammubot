@@ -824,7 +824,8 @@ class NexonServiceImpl(
             append("아르테리아 Lv.${symbolLevels["아르테리아"]} / 카르시온 Lv.${symbolLevels["카르시온"]}\n")
 
             append("* 그랜드 어센틱심볼\n")
-            append("탈라하트 Lv.${symbolLevels["탈라하트"]}")
+            append("탈라하트 Lv.${symbolLevels["탈라하트"]}\n")
+            append("기어드락 Lv.${symbolLevels["기어드락"]}")
         }
     }
 
