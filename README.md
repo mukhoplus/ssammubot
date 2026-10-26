@@ -70,7 +70,6 @@ Kakaotalk Open Chatting Bot using MapleStory API
 
 - `/시드링 [유저명]` 으로 현재 캐릭터가 장착하고 있는 시드링 및 보조 시드링 정보 출력
 
-
 ### 키등록
 
 - `/키등록 [API_KEY]` 로 보스 및 일퀘 조회에 필요한 NEXON Open API Key 등록
