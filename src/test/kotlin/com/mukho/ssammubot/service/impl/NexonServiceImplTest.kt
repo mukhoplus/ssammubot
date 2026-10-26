@@ -454,6 +454,18 @@ class NexonServiceImplTest {
     }
 
     @Test
+    fun `boss returns invalid apiKey message when both apiKey and nickname are invalid`() {
+        val encryptedKey = CryptoUtil.encrypt("invalid-nexon-api-key")
+        routes["/maplestory/v1/id"] = { req ->
+            assertEquals("invalid-nexon-api-key", req.headers().getFirst("x-nxopen-api-key"))
+            jsonResponse(400, errorBody("OPENAPI00005"))
+        }
+
+        val res = nexonService.boss("없는닉네임", encryptedKey)
+        assertEquals("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.", res.message)
+    }
+
+    @Test
     fun `quest returns not own character message on OPENAPI00004`() {
         stubOcid()
         val encryptedKey = CryptoUtil.encrypt("user-api-key")
