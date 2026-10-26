@@ -23,61 +23,19 @@ class NexonServiceImpl(
     private val apiLogService: ApiLogService
 ): NexonService {
 
-    override fun scouter(characterName: String): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-
-        return try {
+    override fun scouter(characterName: String): ResponseDto =
+        logged("scouter", mapOf("characterName" to characterName)) {
             val ocid = fetchOcid(characterName)
-
             if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
+                return@logged ResponseDto(ocid)
             }
-
-            val result = ResponseDto("https://maplescouter.com/info?name=$characterName")
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("scouter", parameters, result, processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("scouter", parameters, null, processingTime, e.message)
-            throw e
+            ResponseDto("https://maplescouter.com/info?name=$characterName")
         }
-    }
 
-    override fun info(characterName: String): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-
-        return try {
-            var ocid = fetchOcid(characterName)
-
-            val result = if (NexonMessage.isError(ocid)) {
-                ResponseDto(ocid)
-            } else {
-                var infoResultStr = fetchInfoResult(ocid, characterName)
-
-                // OPENAPI00003 등으로 인해 닉네임 확인 메시지가 반환된 경우 1회 자동 재시도
-                if (infoResultStr == NexonMessage.CHECK_NICKNAME) {
-                    ocid = fetchOcid(characterName, forceRefresh = true)
-                    if (!NexonMessage.isError(ocid)) {
-                        infoResultStr = fetchInfoResult(ocid, characterName)
-                    }
-                }
-                ResponseDto(infoResultStr)
-            }
-
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("info", parameters, result, processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("info", parameters, null, processingTime, e.message)
-            throw e
+    override fun info(characterName: String): ResponseDto =
+        logged("info", mapOf("characterName" to characterName)) {
+            ResponseDto(withOcidRetry(characterName) { ocid -> fetchInfoResult(ocid, characterName) })
         }
-    }
 
     private fun fetchInfoResult(ocid: String, characterName: String): String {
         return try {
@@ -86,48 +44,22 @@ class NexonServiceImpl(
                     val infoResult = tuple.t1
                     val statResult = tuple.t2
                     val unionResult = tuple.t3
+                    val results = listOf(infoResult, statResult)
 
-                    when {
-                        infoResult == NexonMessage.CHECK_NICKNAME -> NexonMessage.CHECK_NICKNAME
-                        statResult == NexonMessage.CHECK_NICKNAME -> NexonMessage.CHECK_NICKNAME
-                        NexonMessage.isError(infoResult) -> infoResult
-                        NexonMessage.isError(statResult) -> statResult
-                        else -> infoResult + statResult + unionResult
-                    }
+                    results.firstOrNull { it == NexonMessage.CHECK_NICKNAME }
+                        ?: results.firstOrNull { NexonMessage.isError(it) }
+                        ?: (infoResult + statResult + unionResult)
                 }
-                .block() ?: NexonMessage.API_ERROR
+                .blockOrError()
         } catch (e: Exception) {
             NexonMessage.API_ERROR
         }
     }
 
-    override fun history(characterName: String): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-        return try {
-            var ocid = fetchOcid(characterName)
-            if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
-            }
-
-            var historyStr = fetchHistoryResult(ocid, characterName)
-            if (historyStr == NexonMessage.CHECK_NICKNAME) {
-                ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!NexonMessage.isError(ocid)) {
-                    historyStr = fetchHistoryResult(ocid, characterName)
-                }
-            }
-
-            val result = ResponseDto(historyStr)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("history", parameters, result, processingTime)
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("history", parameters, null, processingTime, e.message)
-            throw e
+    override fun history(characterName: String): ResponseDto =
+        logged("history", mapOf("characterName" to characterName)) {
+            ResponseDto(withOcidRetry(characterName) { ocid -> fetchHistoryResult(ocid, characterName) })
         }
-    }
 
     private fun fetchHistoryResult(ocid: String, characterName: String): String {
         return try {
@@ -203,271 +135,168 @@ class NexonServiceImpl(
         }
     }
 
-    override fun symbol(characterName: String): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-
-        return try {
-            var ocid = fetchOcid(characterName)
-
-            if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
-            }
-
-            var symbolResult = getSymbol(characterName, ocid).block() ?: NexonMessage.API_ERROR
-            if (symbolResult == NexonMessage.CHECK_NICKNAME) {
-                ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!NexonMessage.isError(ocid)) {
-                    symbolResult = getSymbol(characterName, ocid).block() ?: NexonMessage.API_ERROR
-                }
-            }
-
-            val result = ResponseDto(symbolResult)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("symbol", parameters, result, processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("symbol", parameters, null, processingTime, e.message)
-            throw e
+    override fun symbol(characterName: String): ResponseDto =
+        logged("symbol", mapOf("characterName" to characterName)) {
+            ResponseDto(withOcidRetry(characterName) { ocid -> getSymbol(characterName, ocid).blockOrError() })
         }
-    }
 
-    override fun abil(characterName: String): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-
-        return try {
-            var ocid = fetchOcid(characterName)
-
-            if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
-            }
-
-            var abilityResult = getAbility(characterName, ocid).block() ?: NexonMessage.API_ERROR
-            if (abilityResult == NexonMessage.CHECK_NICKNAME) {
-                ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!NexonMessage.isError(ocid)) {
-                    abilityResult = getAbility(characterName, ocid).block() ?: NexonMessage.API_ERROR
-                }
-            }
-
-            val result = ResponseDto(abilityResult)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("abil", parameters, result, processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("abil", parameters, null, processingTime, e.message)
-            throw e
+    override fun abil(characterName: String): ResponseDto =
+        logged("abil", mapOf("characterName" to characterName)) {
+            ResponseDto(withOcidRetry(characterName) { ocid -> getAbility(characterName, ocid).blockOrError() })
         }
-    }
 
     override fun levelUp(
         characterName: String,
         targetLevel: Int?
+    ): ResponseDto = logged("levelUp", mapOf("characterName" to characterName, "targetLevel" to targetLevel)) {
+        var actualTargetLevel = targetLevel
+        val lastWeekDates = getLastWeekDates()
+
+        val (ocid, levelExpHistory) = withOcidRetry(
+            characterName = characterName,
+            shouldRetry = { (_, history) -> history.isEmpty() },
+            onOcidError = { err -> return@logged ResponseDto(err) },
+        ) { resolvedOcid ->
+            resolvedOcid to getOrFetchLevelExpHistory(characterName, resolvedOcid, lastWeekDates)
+        }
+
+        if (levelExpHistory.isEmpty()) {
+            return@logged ResponseDto(NexonMessage.NO_RECENT_EXP)
+        }
+
+        val (curLevel, curExp) = levelExpHistory.last()
+        val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
+
+        val lastDate = lastWeekDates.last()
+        val charWorldInfo = getHistory(ocid, lastDate, characterName).block()?.getOrNull(0) ?: ""
+
+        if (actualTargetLevel == null) {
+            if (curLevel >= 300) {
+                return@logged ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
+            }
+            actualTargetLevel = curLevel + 1
+        }
+
+        if (curLevel >= 300) {
+            return@logged ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
+        }
+        if (actualTargetLevel > 300) {
+            return@logged ResponseDto("목표 레벨이 300을 초과합니다.")
+        }
+        if (actualTargetLevel <= curLevel) {
+            return@logged ResponseDto("목표 레벨이 현재 레벨보다 낮거나 같습니다.")
+        }
+        if (avgExpGain <= 0) {
+            return@logged ResponseDto("$charWorldInfo\n경험치 증가량이 없어 예상 날짜를 계산할 수 없습니다.")
+        }
+
+        val requiredExp = ExperienceUtil.getExpToTargetLevel(curLevel, curExp, actualTargetLevel)
+        val estimatedDays = ceil(requiredExp.toDouble() / avgExpGain).toLong()
+        val targetDate = LocalDate.now().plusDays(estimatedDays)
+        val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+        val dateMsg = formattedDate
+        val daysMsg = "(${estimatedDays}일 후)"
+
+        val message = buildString {
+            if (charWorldInfo.isNotBlank()) {
+                append("$charWorldInfo\n")
+            }
+            append("현재 레벨 : $curLevel\n")
+            append("목표 레벨 : $actualTargetLevel\n")
+            append("예상 달성 날짜 : $dateMsg$daysMsg")
+        }
+
+        ResponseDto(message)
+    }
+
+    override fun ring(characterName: String): ResponseDto =
+        logged("ring", mapOf("characterName" to characterName)) {
+            ResponseDto(withOcidRetry(characterName) { ocid -> getRing(characterName, ocid).blockOrError() })
+        }
+
+    override fun encryptKey(apiKey: String): ResponseDto =
+        logged("encryptKey", emptyMap(), maskResult = true) {
+            ResponseDto(CryptoUtil.encrypt(apiKey.trim()))
+        }
+
+    override fun boss(characterName: String, apiKey: String?): ResponseDto =
+        logged("boss", mapOf("characterName" to characterName)) {
+            val decryptedApiKey = decryptApiKeyOrError(apiKey)
+                .getOrElse { return@logged ResponseDto(it.message ?: NexonMessage.INVALID_API_KEY) }
+
+            ResponseDto(withOcidRetry(characterName) { ocid ->
+                getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).blockOrError()
+            })
+        }
+
+    override fun quest(characterName: String, apiKey: String?): ResponseDto =
+        logged("quest", mapOf("characterName" to characterName)) {
+            val decryptedApiKey = decryptApiKeyOrError(apiKey)
+                .getOrElse { return@logged ResponseDto(it.message ?: NexonMessage.INVALID_API_KEY) }
+
+            ResponseDto(withOcidRetry(characterName) { ocid ->
+                getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).blockOrError()
+            })
+        }
+
+    private inline fun logged(
+        apiName: String,
+        parameters: Map<String, Any?>,
+        maskResult: Boolean = false,
+        block: () -> ResponseDto,
     ): ResponseDto {
         val startTime = System.currentTimeMillis()
-        var actualTargetLevel = targetLevel
-        val parameters: Map<String, Any?> = mapOf("characterName" to characterName, "targetLevel" to targetLevel)
         return try {
-            var ocid = fetchOcid(characterName)
-            if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
+            block().also { result ->
+                val loggedResult = if (maskResult) ResponseDto("********") else result
+                val processingTime = System.currentTimeMillis() - startTime
+                apiLogService.logApiCall(apiName, parameters, loggedResult, processingTime)
             }
-
-            val lastWeekDates = getLastWeekDates()
-            var levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
-            if (levelExpHistory.isEmpty()) {
-                ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!NexonMessage.isError(ocid)) {
-                    levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
-                }
-            }
-
-            if (levelExpHistory.isEmpty()) {
-                return ResponseDto(NexonMessage.NO_RECENT_EXP)
-            }
-
-            val (curLevel, curExp) = levelExpHistory.last()
-            val avgExpGain = ExperienceUtil.calculateAverageExpGain(levelExpHistory)
-
-            val lastDate = lastWeekDates.last()
-            val charWorldInfo = getHistory(ocid, lastDate, characterName).block()?.getOrNull(0) ?: ""
-
-            if (actualTargetLevel == null) {
-                if (curLevel >= 300) {
-                    return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
-                }
-                actualTargetLevel = curLevel + 1
-            }
-
-            if (curLevel >= 300) {
-                return ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
-            }
-            if (actualTargetLevel > 300) {
-                return ResponseDto("목표 레벨이 300을 초과합니다.")
-            }
-            if (actualTargetLevel <= curLevel) {
-                return ResponseDto("목표 레벨이 현재 레벨보다 낮거나 같습니다.")
-            }
-            if (avgExpGain <= 0) {
-                return ResponseDto("$charWorldInfo\n경험치 증가량이 없어 예상 날짜를 계산할 수 없습니다.")
-            }
-
-            val requiredExp = ExperienceUtil.getExpToTargetLevel(curLevel, curExp, actualTargetLevel)
-            val estimatedDays = ceil(requiredExp.toDouble() / avgExpGain).toLong()
-            val targetDate = LocalDate.now().plusDays(estimatedDays)
-            val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
-            val dateMsg = formattedDate
-            val daysMsg = "(${estimatedDays}일 후)"
-
-            val message = buildString {
-                if (charWorldInfo.isNotBlank()) {
-                    append("$charWorldInfo\n")
-                }
-                append("현재 레벨 : $curLevel\n")
-                append("목표 레벨 : $actualTargetLevel\n")
-                append("예상 달성 날짜 : $dateMsg$daysMsg")
-            }
-
-            val result = ResponseDto(message)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("levelUp", parameters, result, processingTime)
-            result
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("levelUp", parameters, null, processingTime, e.message)
+            apiLogService.logApiCall(apiName, parameters, null, processingTime, e.message)
             throw e
         }
     }
 
-    override fun ring(characterName: String): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-
-        return try {
-            var ocid = fetchOcid(characterName)
-
-            if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
-            }
-
-            var ringResult = getRing(characterName, ocid).block() ?: NexonMessage.API_ERROR
-            if (ringResult == NexonMessage.CHECK_NICKNAME) {
-                ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!NexonMessage.isError(ocid)) {
-                    ringResult = getRing(characterName, ocid).block() ?: NexonMessage.API_ERROR
-                }
-            }
-
-            val result = ResponseDto(ringResult)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("ring", parameters, result, processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("ring", parameters, null, processingTime, e.message)
-            throw e
+    private inline fun <T> withOcidRetry(
+        characterName: String,
+        shouldRetry: (T) -> Boolean,
+        onOcidError: (String) -> T,
+        fetch: (ocid: String) -> T,
+    ): T {
+        val ocid = fetchOcid(characterName)
+        if (NexonMessage.isError(ocid)) {
+            return onOcidError(ocid)
         }
+
+        val first = fetch(ocid)
+        if (!shouldRetry(first)) {
+            return first
+        }
+
+        val refreshed = fetchOcid(characterName, forceRefresh = true)
+        return if (NexonMessage.isError(refreshed)) first else fetch(refreshed)
     }
 
-    override fun encryptKey(apiKey: String): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = emptyMap<String, Any>()
+    private fun withOcidRetry(characterName: String, fetch: (ocid: String) -> String): String =
+        withOcidRetry(
+            characterName = characterName,
+            shouldRetry = { it == NexonMessage.CHECK_NICKNAME },
+            onOcidError = { it },
+            fetch = fetch,
+        )
 
-        return try {
-            val encrypted = CryptoUtil.encrypt(apiKey.trim())
-            val result = ResponseDto(encrypted)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("encryptKey", parameters, ResponseDto("********"), processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("encryptKey", parameters, null, processingTime, e.message)
-            throw e
+    private fun decryptApiKeyOrError(apiKey: String?): Result<String> {
+        if (apiKey.isNullOrBlank()) {
+            return Result.failure(IllegalArgumentException(NexonMessage.API_KEY_REQUIRED))
         }
+        val decrypted = CryptoUtil.decrypt(apiKey)
+            ?: return Result.failure(IllegalArgumentException(NexonMessage.INVALID_API_KEY))
+        return Result.success(decrypted)
     }
 
-    override fun boss(characterName: String, apiKey: String?): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-
-        return try {
-            if (apiKey.isNullOrBlank()) {
-                return ResponseDto(NexonMessage.API_KEY_REQUIRED)
-            }
-
-            val decryptedApiKey = CryptoUtil.decrypt(apiKey)
-                ?: return ResponseDto(NexonMessage.INVALID_API_KEY)
-
-            var ocid = fetchOcid(characterName)
-
-            if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
-            }
-
-            var bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: NexonMessage.API_ERROR
-            if (bossResult == NexonMessage.CHECK_NICKNAME) {
-                ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!NexonMessage.isError(ocid)) {
-                    bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: NexonMessage.API_ERROR
-                }
-            }
-
-            val result = ResponseDto(bossResult)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("boss", parameters, result, processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("boss", parameters, null, processingTime, e.message)
-            throw e
-        }
-    }
-
-    override fun quest(characterName: String, apiKey: String?): ResponseDto {
-        val startTime = System.currentTimeMillis()
-        val parameters = mapOf("characterName" to characterName)
-
-        return try {
-            if (apiKey.isNullOrBlank()) {
-                return ResponseDto(NexonMessage.API_KEY_REQUIRED)
-            }
-
-            val decryptedApiKey = CryptoUtil.decrypt(apiKey)
-                ?: return ResponseDto(NexonMessage.INVALID_API_KEY)
-
-            var ocid = fetchOcid(characterName)
-
-            if (NexonMessage.isError(ocid)) {
-                return ResponseDto(ocid)
-            }
-
-            var questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: NexonMessage.API_ERROR
-            if (questResult == NexonMessage.CHECK_NICKNAME) {
-                ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!NexonMessage.isError(ocid)) {
-                    questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: NexonMessage.API_ERROR
-                }
-            }
-
-            val result = ResponseDto(questResult)
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("quest", parameters, result, processingTime)
-
-            result
-        } catch (e: Exception) {
-            val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("quest", parameters, null, processingTime, e.message)
-            throw e
-        }
-    }
+    private fun Mono<String>.blockOrError(): String = block() ?: NexonMessage.API_ERROR
 
     private fun <T : Any, R : Any> nexonGet(
         uri: String,
@@ -571,7 +400,7 @@ class NexonServiceImpl(
             ) { dto ->
                 redisService.saveOcid(characterName, dto.ocid)
                 dto.ocid
-            }.block() ?: NexonMessage.API_ERROR
+            }.blockOrError()
         } catch (e: Exception) {
             NexonMessage.API_ERROR
         }
