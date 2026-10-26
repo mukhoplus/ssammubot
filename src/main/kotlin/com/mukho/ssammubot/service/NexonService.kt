@@ -10,5 +10,7 @@ interface NexonService {
     fun abil(characterName: String): ResponseDto
     fun levelUp(characterName: String, targetLevel: Int? = null): ResponseDto
     fun ring(characterName: String): ResponseDto
-    fun scheduler(characterName: String, apiKey: String? = null): ResponseDto
+    fun encryptKey(apiKey: String): ResponseDto
+    fun boss(characterName: String, apiKey: String? = null): ResponseDto
+    fun quest(characterName: String, apiKey: String? = null): ResponseDto
 }
