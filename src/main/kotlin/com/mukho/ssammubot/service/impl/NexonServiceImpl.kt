@@ -4,6 +4,7 @@ import com.mukho.ssammubot.model.*
 import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.NexonService
 import com.mukho.ssammubot.service.RedisService
+import com.mukho.ssammubot.utils.CryptoUtil
 import com.mukho.ssammubot.utils.ExperienceUtil
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
@@ -391,33 +392,96 @@ class NexonServiceImpl(
         }
     }
 
-    override fun scheduler(characterName: String, apiKey: String?): ResponseDto {
+    override fun encryptKey(apiKey: String): ResponseDto {
+        val startTime = System.currentTimeMillis()
+        val parameters = emptyMap<String, Any>()
+
+        return try {
+            val encrypted = CryptoUtil.encrypt(apiKey.trim())
+            val result = ResponseDto(encrypted)
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("encryptKey", parameters, ResponseDto("********"), processingTime)
+
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("encryptKey", parameters, null, processingTime, e.message)
+            throw e
+        }
+    }
+
+    override fun boss(characterName: String, apiKey: String?): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
 
         return try {
+            if (apiKey.isNullOrBlank()) {
+                return ResponseDto("/키등록 명령어를 통해 NEXON Open API에서 발급받은 본인의 API_KEY를 등록해주세요.\n사용법: 키등록 [API_KEY]")
+            }
+
+            val decryptedApiKey = CryptoUtil.decrypt(apiKey)
+                ?: return ResponseDto("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.")
+
             var ocid = fetchOcid(characterName)
 
             if (isErrorResponse(ocid)) {
                 return ResponseDto(formatErrorMessage(ocid))
             }
 
-            var schedulerResult = getScheduler(characterName, ocid, apiKey).block() ?: "API 오류 발생"
-            if (schedulerResult.startsWith("닉네임을 다시 확인해주세요")) {
+            var bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: "API 오류 발생"
+            if (bossResult.startsWith("닉네임을 다시 확인해주세요")) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
                 if (!isErrorResponse(ocid)) {
-                    schedulerResult = getScheduler(characterName, ocid, apiKey).block() ?: "API 오류 발생"
+                    bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: "API 오류 발생"
                 }
             }
 
-            val result = ResponseDto(schedulerResult)
+            val result = ResponseDto(bossResult)
             val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("scheduler", parameters, result, processingTime)
+            apiLogService.logApiCall("boss", parameters, result, processingTime)
 
             result
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
-            apiLogService.logApiCall("scheduler", parameters, null, processingTime, e.message)
+            apiLogService.logApiCall("boss", parameters, null, processingTime, e.message)
+            throw e
+        }
+    }
+
+    override fun quest(characterName: String, apiKey: String?): ResponseDto {
+        val startTime = System.currentTimeMillis()
+        val parameters = mapOf("characterName" to characterName)
+
+        return try {
+            if (apiKey.isNullOrBlank()) {
+                return ResponseDto("/키등록 명령어를 통해 NEXON Open API에서 발급받은 본인의 API_KEY를 등록해주세요.\n사용법: 키등록 [API_KEY]")
+            }
+
+            val decryptedApiKey = CryptoUtil.decrypt(apiKey)
+                ?: return ResponseDto("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.")
+
+            var ocid = fetchOcid(characterName)
+
+            if (isErrorResponse(ocid)) {
+                return ResponseDto(formatErrorMessage(ocid))
+            }
+
+            var questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: "API 오류 발생"
+            if (questResult.startsWith("닉네임을 다시 확인해주세요")) {
+                ocid = fetchOcid(characterName, forceRefresh = true)
+                if (!isErrorResponse(ocid)) {
+                    questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: "API 오류 발생"
+                }
+            }
+
+            val result = ResponseDto(questResult)
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("quest", parameters, result, processingTime)
+
+            result
+        } catch (e: Exception) {
+            val processingTime = System.currentTimeMillis() - startTime
+            apiLogService.logApiCall("quest", parameters, null, processingTime, e.message)
             throw e
         }
     }
@@ -960,7 +1024,12 @@ class NexonServiceImpl(
             }
     }
 
-    private fun getScheduler(characterName: String, ocid: String, apiKey: String? = null): Mono<String> {
+    private fun getScheduler(
+        characterName: String,
+        ocid: String,
+        apiKey: String? = null,
+        formatter: (String, CharacterSchedulerDto) -> String
+    ): Mono<String> {
         val requestSpec = webClient.get()
             .uri("/scheduler/character-state?ocid=$ocid")
 
@@ -974,7 +1043,7 @@ class NexonServiceImpl(
                     200 -> {
                         response.bodyToMono(CharacterSchedulerDto::class.java)
                             .map { dto ->
-                                formatSchedulerInfo(characterName, dto)
+                                formatter(characterName, dto)
                             }
                     }
                     400 -> response.bodyToMono(ErrorMessageDto::class.java)
@@ -984,6 +1053,10 @@ class NexonServiceImpl(
                                 "OPENAPI00003" -> {
                                     invalidateOcidIfNeeded(characterName, error.error.name)
                                     "닉네임을 다시 확인해주세요"
+                                }
+                                "OPENAPI00004" -> {
+                                    invalidateOcidIfNeeded(characterName, error.error.name)
+                                    "자신의 계정에 속한 캐릭터만 조회가 가능합니다."
                                 }
                                 else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
                             }
@@ -1004,7 +1077,7 @@ class NexonServiceImpl(
             }
     }
 
-    private fun formatSchedulerInfo(characterName: String, dto: CharacterSchedulerDto): String {
+    private fun formatBossInfo(characterName: String, dto: CharacterSchedulerDto): String {
         val difficultyMap = mapOf(
             "easy" to "이지",
             "normal" to "노멀",
@@ -1012,18 +1085,6 @@ class NexonServiceImpl(
             "chaos" to "카오스",
             "extreme" to "익스트림"
         )
-
-        val dailyQuests = dto.daily_contents.orEmpty().filter {
-            it.registration_flag == "true" && it.type == "quest" && it.quest_state != "0"
-        }
-
-        val dailyAccountContents = dto.daily_contents.orEmpty().filter {
-            it.registration_flag == "true" && it.type == "contents"
-        }
-        val weeklyAccountContents = dto.weekly_contents.orEmpty().filter {
-            it.registration_flag == "true" && !(it.type == "quest" && it.quest_state == "0")
-        }
-        val accountContents = dailyAccountContents + weeklyAccountContents
 
         val weeklyBosses = dto.boss_contents.orEmpty()
             .filter { it.registration_flag == "true" && it.cycle == "bossWeekly" }
@@ -1038,35 +1099,9 @@ class NexonServiceImpl(
         val limitCount = if (rawLimitCount > 0) rawLimitCount else 12
 
         return buildString {
-            append("$characterName - 스케줄러 정보\n\n")
+            append("$characterName - 보스 정보\n\n")
 
-            append("[일일 퀘스트]\n")
-            if (dailyQuests.isEmpty()) {
-                append("- 등록된 항목 없음\n")
-            } else {
-                dailyQuests.forEach { quest ->
-                    val status = if (quest.quest_state == "2") "완료" else "미완료"
-                    append("- ${quest.content_name}: $status\n")
-                }
-            }
-
-            append("\n[계정 콘텐츠]\n")
-            if (accountContents.isEmpty()) {
-                append("- 등록된 항목 없음\n")
-            } else {
-                accountContents.forEach { content ->
-                    val now = content.now_count?.toInt() ?: 0
-                    val max = content.max_count?.toInt() ?: 0
-                    val status = when {
-                        content.type == "quest" -> if (content.quest_state == "2") "완료" else "미완료"
-                        max > 1 -> "$now/$max"
-                        else -> if (now > 0) "완료" else "미완료"
-                    }
-                    append("- ${content.content_name}: $status\n")
-                }
-            }
-
-            append("\n[주간 보스] ($clearCount/$limitCount)\n")
+            append("[주간 보스] ($clearCount/$limitCount)\n")
             if (weeklyBosses.isEmpty()) {
                 append("- 등록된 항목 없음\n")
             } else {
@@ -1086,6 +1121,53 @@ class NexonServiceImpl(
                     val status = if (boss.complete_flag == "true") "완료" else "미완료"
                     append("- ${boss.content_name}($korDifficulty): $status")
                     if (index < monthlyBosses.size - 1) {
+                        append("\n")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun formatQuestInfo(characterName: String, dto: CharacterSchedulerDto): String {
+        val dailyQuests = dto.daily_contents.orEmpty().filter {
+            it.registration_flag == "true" && it.type == "quest" && it.quest_state != "0"
+        }
+
+        val dailyAccountContents = dto.daily_contents.orEmpty().filter {
+            it.registration_flag == "true" && it.type == "contents"
+        }
+        val weeklyAccountContents = dto.weekly_contents.orEmpty().filter {
+            it.registration_flag == "true" && !(it.type == "quest" && it.quest_state == "0")
+        }
+        val accountContents = dailyAccountContents + weeklyAccountContents
+
+        return buildString {
+            append("$characterName - 일퀘 정보\n\n")
+
+            append("[일일 퀘스트]\n")
+            if (dailyQuests.isEmpty()) {
+                append("- 등록된 항목 없음\n")
+            } else {
+                dailyQuests.forEach { quest ->
+                    val status = if (quest.quest_state == "2") "완료" else "미완료"
+                    append("- ${quest.content_name}: $status\n")
+                }
+            }
+
+            append("\n[계정 콘텐츠]\n")
+            if (accountContents.isEmpty()) {
+                append("- 등록된 항목 없음")
+            } else {
+                accountContents.forEachIndexed { index, content ->
+                    val now = content.now_count?.toInt() ?: 0
+                    val max = content.max_count?.toInt() ?: 0
+                    val status = when {
+                        content.type == "quest" -> if (content.quest_state == "2") "완료" else "미완료"
+                        max > 1 -> "$now/$max"
+                        else -> if (now > 0) "완료" else "미완료"
+                    }
+                    append("- ${content.content_name}: $status")
+                    if (index < accountContents.size - 1) {
                         append("\n")
                     }
                 }
