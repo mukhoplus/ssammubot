@@ -355,6 +355,26 @@ class NexonServiceImplTest {
     }
 
     @Test
+    fun `history propagates maintenance and rate limit errors without IndexOutOfBounds`() {
+        stubOcid()
+        routes["/maplestory/v1/character/basic"] = { jsonResponse(429, errorBody("OPENAPI00007")) }
+
+        val res = nexonService.history("묵호")
+        assertEquals("사용량이 많습니다. 다시 시도해주세요.", res.message)
+    }
+
+    @Test
+    fun `early return on error still records apiLogService call`() {
+        routes["/maplestory/v1/id"] = { jsonResponse(400, errorBody("OPENAPI00004")) }
+
+        val res = nexonService.scouter("없는케릭")
+        assertEquals("닉네임을 다시 확인해주세요.", res.message)
+        assertEquals(1, apiLogService.logs.size)
+        assertEquals("scouter", apiLogService.logs[0].apiName)
+        assertEquals(ResponseDto("닉네임을 다시 확인해주세요."), apiLogService.logs[0].result)
+    }
+
+    @Test
     fun `levelUp validates max level 300`() {
         stubOcid()
         routes["/maplestory/v1/character/basic"] = {

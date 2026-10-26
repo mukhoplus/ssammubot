@@ -23,6 +23,35 @@ class NexonServiceImpl(
     private val apiLogService: ApiLogService
 ): NexonService {
 
+    companion object {
+        private val TARGET_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy년 MM월 dd일")
+        private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("MM월 dd일")
+
+        private val SYMBOL_MAPPING: Map<String, String> = mapOf(
+            "아케인심볼 : 소멸의 여로" to "여로",
+            "아케인심볼 : 츄츄 아일랜드" to "츄츄",
+            "아케인심볼 : 레헬른" to "레헬른",
+            "아케인심볼 : 아르카나" to "아르카나",
+            "아케인심볼 : 모라스" to "모라스",
+            "아케인심볼 : 에스페라" to "에스페라",
+            "어센틱심볼 : 세르니움" to "세르니움",
+            "어센틱심볼 : 아르크스" to "아르크스",
+            "어센틱심볼 : 오디움" to "오디움",
+            "어센틱심볼 : 도원경" to "도원경",
+            "어센틱심볼 : 아르테리아" to "아르테리아",
+            "어센틱심볼 : 카르시온" to "카르시온",
+            "그랜드 어센틱심볼 : 탈라하트" to "탈라하트"
+        )
+
+        private val BOSS_DIFFICULTY_MAP: Map<String, String> = mapOf(
+            "easy" to "이지",
+            "normal" to "노멀",
+            "hard" to "하드",
+            "chaos" to "카오스",
+            "extreme" to "익스트림"
+        )
+    }
+
     override fun scouter(characterName: String): ResponseDto =
         logged("scouter", mapOf("characterName" to characterName)) {
             val ocid = fetchOcid(characterName)
@@ -80,13 +109,12 @@ class NexonServiceImpl(
                     val characterBasic: List<String>? = getHistory(ocid, date, characterName).block()
                     if (!characterBasic.isNullOrEmpty()) {
                         if (characterBasic.size == 1) {
-                            if (characterBasic[0] == NexonMessage.CHECK_NICKNAME) {
-                                return NexonMessage.CHECK_NICKNAME
-                            }
-                            if (characterBasic[0] == NexonMessage.NO_RECORD) {
+                            val errorMsg = characterBasic[0]
+                            if (errorMsg == NexonMessage.NO_RECORD) {
                                 isValidId = false
                                 break
                             }
+                            return errorMsg
                         }
                         if (charWorldInfo == null) {
                             charWorldInfo = characterBasic[0]
@@ -106,7 +134,7 @@ class NexonServiceImpl(
                 if (avgExpGain > 0 && expToNext > 0) {
                     val days = ceil((expToNext).toDouble() / avgExpGain).toInt()
                     val targetDate = LocalDate.now().plusDays(days.toLong())
-                    val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
+                    val formattedDate = targetDate.format(TARGET_DATE_FORMATTER)
                     levelUpEstimateMsg = "예상 레벨업 날짜 : $formattedDate(${days}일 후)"
                 }
             }
@@ -149,7 +177,6 @@ class NexonServiceImpl(
         characterName: String,
         targetLevel: Int?
     ): ResponseDto = logged("levelUp", mapOf("characterName" to characterName, "targetLevel" to targetLevel)) {
-        var actualTargetLevel = targetLevel
         val lastWeekDates = getLastWeekDates()
 
         val (ocid, levelExpHistory) = withOcidRetry(
@@ -170,16 +197,12 @@ class NexonServiceImpl(
         val lastDate = lastWeekDates.last()
         val charWorldInfo = getHistory(ocid, lastDate, characterName).block()?.getOrNull(0) ?: ""
 
-        if (actualTargetLevel == null) {
-            if (curLevel >= 300) {
-                return@logged ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
-            }
-            actualTargetLevel = curLevel + 1
-        }
-
         if (curLevel >= 300) {
             return@logged ResponseDto("$charWorldInfo\n이미 만렙(300)입니다.")
         }
+
+        val actualTargetLevel = targetLevel ?: (curLevel + 1)
+
         if (actualTargetLevel > 300) {
             return@logged ResponseDto("목표 레벨이 300을 초과합니다.")
         }
@@ -193,9 +216,7 @@ class NexonServiceImpl(
         val requiredExp = ExperienceUtil.getExpToTargetLevel(curLevel, curExp, actualTargetLevel)
         val estimatedDays = ceil(requiredExp.toDouble() / avgExpGain).toLong()
         val targetDate = LocalDate.now().plusDays(estimatedDays)
-        val formattedDate = targetDate.format(DateTimeFormatter.ofPattern("yyyy년 MM월 dd일"))
-        val dateMsg = formattedDate
-        val daysMsg = "(${estimatedDays}일 후)"
+        val formattedDate = targetDate.format(TARGET_DATE_FORMATTER)
 
         val message = buildString {
             if (charWorldInfo.isNotBlank()) {
@@ -203,7 +224,7 @@ class NexonServiceImpl(
             }
             append("현재 레벨 : $curLevel\n")
             append("목표 레벨 : $actualTargetLevel\n")
-            append("예상 달성 날짜 : $dateMsg$daysMsg")
+            append("예상 달성 날짜 : $formattedDate(${estimatedDays}일 후)")
         }
 
         ResponseDto(message)
@@ -462,12 +483,18 @@ class NexonServiceImpl(
         return ((startDay + 6) downTo startDay).map { getDate(it) }
     }
 
+    private fun isCacheable(date: String, now: LocalDateTime = LocalDateTime.now()): Boolean {
+        val today = getDate(0)
+        val isSpecialCase =
+            (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
+                (now.hour >= 6 && date == today)
+        return !isSpecialCase
+    }
+
     private fun getHistory(ocid: String, date: String, characterName: String? = null): Mono<List<String>> {
         val now = LocalDateTime.now()
-        val today = getDate(0)
-
-        val isOneDayBehind = LocalDate.parse(date).plusDays(1).toString() == today && now.hour < 6
-        val url = if (date == today || isOneDayBehind)
+        val cacheable = isCacheable(date, now)
+        val url = if (!cacheable)
             "/character/basic?ocid=$ocid"
         else
             "/character/basic?ocid=$ocid&date=$date"
@@ -488,16 +515,13 @@ class NexonServiceImpl(
                 emptyList() // 유효하지 않은 데이터 → 빈 리스트 반환
             } else {
                 val characterInfo = "${dto.character_name} - ${dto.world_name}"
-                val formattedDate = LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MM월 dd일"))
+                val formattedDate = LocalDate.parse(date).format(HISTORY_DATE_FORMATTER)
                 val levelInfo = "Lv.${dto.character_level} ${dto.character_exp_rate}%"
                 val level = dto.character_level.toInt()
                 val exp = dto.character_exp.toLong()
 
                 // 캐싱 조건 검사 (오늘 데이터 제외)
-                val isSpecialCase =
-                    (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
-                            (now.hour >= 6 && date == today)
-                if (!isSpecialCase) {
+                if (cacheable) {
                     // 기존 방식: 퍼센테이지 저장
                     redisService.saveHistory(dto.character_name, date, "$formattedDate : $levelInfo")
                     // 신규 방식: 레벨/실제경험치 저장 (character_level, character_exp)
@@ -524,34 +548,12 @@ class NexonServiceImpl(
     }
 
     private fun formatSymbolInfo(characterName: String, symbols: List<SymbolDto>): String {
-        // 심볼 이름과 축약어 매핑
-        val symbolMapping = mapOf(
-            "아케인심볼 : 소멸의 여로" to "여로",
-            "아케인심볼 : 츄츄 아일랜드" to "츄츄",
-            "아케인심볼 : 레헬른" to "레헬른",
-            "아케인심볼 : 아르카나" to "아르카나",
-            "아케인심볼 : 모라스" to "모라스",
-            "아케인심볼 : 에스페라" to "에스페라",
-            "어센틱심볼 : 세르니움" to "세르니움",
-            "어센틱심볼 : 아르크스" to "아르크스",
-            "어센틱심볼 : 오디움" to "오디움",
-            "어센틱심볼 : 도원경" to "도원경",
-            "어센틱심볼 : 아르테리아" to "아르테리아",
-            "어센틱심볼 : 카르시온" to "카르시온",
-            "그랜드 어센틱심볼 : 탈라하트" to "탈라하트"
-        )
-
-        // 한 번의 순회로 모든 심볼 레벨 추출
-        val symbolLevels = mutableMapOf<String, Int>()
-
         // 모든 심볼을 기본값 0으로 초기화
-        symbolMapping.values.forEach { shortName ->
-            symbolLevels[shortName] = 0
-        }
+        val symbolLevels = SYMBOL_MAPPING.values.associateWith { 0 }.toMutableMap()
 
         // 한 번의 순회로 착용한 심볼 레벨 설정
         symbols.forEach { symbol ->
-            symbolMapping.forEach { (keyword, shortName) ->
+            SYMBOL_MAPPING.forEach { (keyword, shortName) ->
                 if (symbol.symbol_name.contains(keyword)) {
                     symbolLevels[shortName] = symbol.symbol_level.toInt()
                 }
@@ -588,37 +590,19 @@ class NexonServiceImpl(
 
     private fun formatAbilityInfo(characterName: String, dto: CharacterAbilityDto): String {
         val currentPreset = dto.preset_no.toInt()
+        val presets = listOf(dto.ability_preset_1, dto.ability_preset_2, dto.ability_preset_3)
 
-        return buildString {
-            append("$characterName - 어빌리티 정보\n")
-
-            // 프리셋 1
-            val preset1Prefix = if (currentPreset == 1) "* " else ""
-            append("${preset1Prefix}프리셋 1[${dto.ability_preset_1.ability_preset_grade}]\n")
-            dto.ability_preset_1.ability_info.forEachIndexed { index, abilityInfo ->
-                append("${index + 1}. [${abilityInfo.ability_grade}] ${abilityInfo.ability_value}\n")
+        val presetBlocks = presets.mapIndexed { idx, preset ->
+            val presetNo = idx + 1
+            val prefix = if (currentPreset == presetNo) "* " else ""
+            val header = "${prefix}프리셋 $presetNo[${preset.ability_preset_grade}]"
+            val lines = preset.ability_info.mapIndexed { lineIdx, info ->
+                "${lineIdx + 1}. [${info.ability_grade}] ${info.ability_value}"
             }
-
-            // 프리셋 2
-            val preset2Prefix = if (currentPreset == 2) "* " else ""
-            append("${preset2Prefix}프리셋 2[${dto.ability_preset_2.ability_preset_grade}]\n")
-            dto.ability_preset_2.ability_info.forEachIndexed { index, abilityInfo ->
-                append("${index + 1}. [${abilityInfo.ability_grade}] ${abilityInfo.ability_value}\n")
-            }
-
-            // 프리셋 3
-            val preset3Prefix = if (currentPreset == 3) "* " else ""
-            append("${preset3Prefix}프리셋 3[${dto.ability_preset_3.ability_preset_grade}]")
-            if (dto.ability_preset_3.ability_info.isNotEmpty()) {
-                append("\n")
-                dto.ability_preset_3.ability_info.forEachIndexed { index, abilityInfo ->
-                    append("${index + 1}. [${abilityInfo.ability_grade}] ${abilityInfo.ability_value}")
-                    if (index < dto.ability_preset_3.ability_info.size - 1) {
-                        append("\n")
-                    }
-                }
-            }
+            (listOf(header) + lines).joinToString("\n")
         }
+
+        return "$characterName - 어빌리티 정보\n" + presetBlocks.joinToString("\n")
     }
 
     /**
@@ -639,13 +623,7 @@ class NexonServiceImpl(
                 val level = apiData[2].toIntOrNull()
                 val exp = apiData[3].toLongOrNull()
                 if (level != null && exp != null) {
-                    // 오늘 날짜 또는 0~6시 특수 케이스는 redis 저장하지 않음
-                    val now = LocalDateTime.now()
-                    val today = getDate(0)
-                    val isSpecialCase =
-                        (now.hour < 6 && LocalDate.parse(date).plusDays(1).toString() == today) ||
-                        (now.hour >= 6 && date == today)
-                    if (!isSpecialCase) {
+                    if (isCacheable(date)) {
                         redisService.saveLevelExp(characterName, date, level, exp)
                     }
                     result.add(Pair(level, exp))
@@ -725,115 +703,75 @@ class NexonServiceImpl(
         }
     }
 
-    private fun formatBossInfo(characterName: String, dto: CharacterSchedulerDto): String {
-        val difficultyMap = mapOf(
-            "easy" to "이지",
-            "normal" to "노멀",
-            "hard" to "하드",
-            "chaos" to "카오스",
-            "extreme" to "익스트림"
-        )
+    private fun formatSection(title: String, lines: List<String>): String {
+        val body = if (lines.isEmpty()) "- 등록된 항목 없음" else lines.joinToString("\n")
+        return "$title\n$body"
+    }
 
-        val weeklyBosses = dto.boss_contents.orEmpty()
+    private fun formatBossInfo(characterName: String, dto: CharacterSchedulerDto): String {
+        fun formatBossLine(boss: SchedulerBossDto): String {
+            val korDifficulty = BOSS_DIFFICULTY_MAP[boss.difficulty?.lowercase()] ?: (boss.difficulty ?: "")
+            val status = if (boss.complete_flag == "true") "완료" else "미완료"
+            return "- ${boss.content_name}($korDifficulty): $status"
+        }
+
+        val weeklyBossLines = dto.boss_contents.orEmpty()
             .filter { it.registration_flag == "true" && it.cycle == "bossWeekly" }
             .sortedBy { it.list_order_no?.toInt() ?: Int.MAX_VALUE }
+            .map(::formatBossLine)
 
-        val monthlyBosses = dto.boss_contents.orEmpty()
+        val monthlyBossLines = dto.boss_contents.orEmpty()
             .filter { it.registration_flag == "true" && it.cycle == "bossMonthly" }
             .sortedBy { it.list_order_no?.toInt() ?: Int.MAX_VALUE }
+            .map(::formatBossLine)
 
         val clearCount = dto.weekly_boss_clear_count?.toInt() ?: 0
         val rawLimitCount = dto.weekly_boss_clear_limit_count?.toInt() ?: 12
         val limitCount = if (rawLimitCount > 0) rawLimitCount else 12
 
-        return buildString {
-            append("$characterName - 보스 정보\n")
-
-            append("[주간 보스] ($clearCount/$limitCount)\n")
-            if (weeklyBosses.isEmpty()) {
-                append("- 등록된 항목 없음\n")
-            } else {
-                weeklyBosses.forEach { boss ->
-                    val korDifficulty = difficultyMap[boss.difficulty?.lowercase()] ?: (boss.difficulty ?: "")
-                    val status = if (boss.complete_flag == "true") "완료" else "미완료"
-                    append("- ${boss.content_name}($korDifficulty): $status\n")
-                }
-            }
-
-            append("[월간 보스]\n")
-            if (monthlyBosses.isEmpty()) {
-                append("- 등록된 항목 없음")
-            } else {
-                monthlyBosses.forEachIndexed { index, boss ->
-                    val korDifficulty = difficultyMap[boss.difficulty?.lowercase()] ?: (boss.difficulty ?: "")
-                    val status = if (boss.complete_flag == "true") "완료" else "미완료"
-                    append("- ${boss.content_name}($korDifficulty): $status")
-                    if (index < monthlyBosses.size - 1) {
-                        append("\n")
-                    }
-                }
-            }
-        }
+        return listOf(
+            "$characterName - 보스 정보",
+            formatSection("[주간 보스] ($clearCount/$limitCount)", weeklyBossLines),
+            formatSection("[월간 보스]", monthlyBossLines),
+        ).joinToString("\n")
     }
 
     private fun formatQuestInfo(characterName: String, dto: CharacterSchedulerDto): String {
-        val dailyQuests = dto.daily_contents.orEmpty().filter {
-            it.type == "quest" && (it.registration_flag == "true" || (!it.quest_state.isNullOrBlank() && it.quest_state != "0"))
+        fun isRegisteredOrStartedQuest(content: SchedulerContentDto): Boolean =
+            content.type == "quest" &&
+                (content.registration_flag == "true" || (!content.quest_state.isNullOrBlank() && content.quest_state != "0"))
+
+        fun formatQuestLine(quest: SchedulerContentDto): String {
+            val status = if (quest.quest_state == "2") "완료" else "미완료"
+            return "- ${quest.content_name}: $status"
         }
 
-        val weeklyQuests = dto.weekly_contents.orEmpty().filter {
-            it.type == "quest" && (it.registration_flag == "true" || (!it.quest_state.isNullOrBlank() && it.quest_state != "0"))
-        }
+        val dailyQuestLines = dto.daily_contents.orEmpty()
+            .filter(::isRegisteredOrStartedQuest)
+            .map(::formatQuestLine)
 
-        val dailyAccountContents = dto.daily_contents.orEmpty().filter {
-            it.registration_flag == "true" && it.type == "contents"
-        }
-        val weeklyAccountContents = dto.weekly_contents.orEmpty().filter {
-            it.registration_flag == "true" && it.type == "contents"
-        }
-        val accountContents = dailyAccountContents + weeklyAccountContents
+        val weeklyQuestLines = dto.weekly_contents.orEmpty()
+            .filter(::isRegisteredOrStartedQuest)
+            .map(::formatQuestLine)
 
-        return buildString {
-            append("$characterName - 일퀘 정보\n")
-
-            append("[일일 퀘스트]\n")
-            if (dailyQuests.isEmpty()) {
-                append("- 등록된 항목 없음\n")
-            } else {
-                dailyQuests.forEach { quest ->
-                    val status = if (quest.quest_state == "2") "완료" else "미완료"
-                    append("- ${quest.content_name}: $status\n")
+        val accountContentLines = (dto.daily_contents.orEmpty() + dto.weekly_contents.orEmpty())
+            .filter { it.registration_flag == "true" && it.type == "contents" }
+            .map { content ->
+                val now = content.now_count?.toInt() ?: 0
+                val max = content.max_count?.toInt() ?: 0
+                val status = when {
+                    content.type == "quest" -> if (content.quest_state == "2") "완료" else "미완료"
+                    max > 1 -> "$now/$max"
+                    else -> if (now > 0) "완료" else "미완료"
                 }
+                "- ${content.content_name}: $status"
             }
 
-            append("[주간 퀘스트]\n")
-            if (weeklyQuests.isEmpty()) {
-                append("- 등록된 항목 없음\n")
-            } else {
-                weeklyQuests.forEach { quest ->
-                    val status = if (quest.quest_state == "2") "완료" else "미완료"
-                    append("- ${quest.content_name}: $status\n")
-                }
-            }
-
-            append("[계정 콘텐츠]\n")
-            if (accountContents.isEmpty()) {
-                append("- 등록된 항목 없음")
-            } else {
-                accountContents.forEachIndexed { index, content ->
-                    val now = content.now_count?.toInt() ?: 0
-                    val max = content.max_count?.toInt() ?: 0
-                    val status = when {
-                        content.type == "quest" -> if (content.quest_state == "2") "완료" else "미완료"
-                        max > 1 -> "$now/$max"
-                        else -> if (now > 0) "완료" else "미완료"
-                    }
-                    append("- ${content.content_name}: $status")
-                    if (index < accountContents.size - 1) {
-                        append("\n")
-                    }
-                }
-            }
-        }
+        return listOf(
+            "$characterName - 일퀘 정보",
+            formatSection("[일일 퀘스트]", dailyQuestLines),
+            formatSection("[주간 퀘스트]", weeklyQuestLines),
+            formatSection("[계정 콘텐츠]", accountContentLines),
+        ).joinToString("\n")
     }
 }
