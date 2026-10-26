@@ -1130,14 +1130,18 @@ class NexonServiceImpl(
 
     private fun formatQuestInfo(characterName: String, dto: CharacterSchedulerDto): String {
         val dailyQuests = dto.daily_contents.orEmpty().filter {
-            it.registration_flag == "true" && it.type == "quest" && it.quest_state != "0"
+            it.type == "quest" && (it.registration_flag == "true" || (!it.quest_state.isNullOrBlank() && it.quest_state != "0"))
+        }
+
+        val weeklyQuests = dto.weekly_contents.orEmpty().filter {
+            it.type == "quest" && (it.registration_flag == "true" || (!it.quest_state.isNullOrBlank() && it.quest_state != "0"))
         }
 
         val dailyAccountContents = dto.daily_contents.orEmpty().filter {
             it.registration_flag == "true" && it.type == "contents"
         }
         val weeklyAccountContents = dto.weekly_contents.orEmpty().filter {
-            it.registration_flag == "true" && !(it.type == "quest" && it.quest_state == "0")
+            it.registration_flag == "true" && it.type == "contents"
         }
         val accountContents = dailyAccountContents + weeklyAccountContents
 
@@ -1149,6 +1153,16 @@ class NexonServiceImpl(
                 append("- 등록된 항목 없음\n")
             } else {
                 dailyQuests.forEach { quest ->
+                    val status = if (quest.quest_state == "2") "완료" else "미완료"
+                    append("- ${quest.content_name}: $status\n")
+                }
+            }
+
+            append("\n[주간 퀘스트]\n")
+            if (weeklyQuests.isEmpty()) {
+                append("- 등록된 항목 없음\n")
+            } else {
+                weeklyQuests.forEach { quest ->
                     val status = if (quest.quest_state == "2") "완료" else "미완료"
                     append("- ${quest.content_name}: $status\n")
                 }
