@@ -136,7 +136,7 @@ class NexonServiceImpl(
                     val days = ceil((expToNext).toDouble() / avgExpGain).toInt()
                     val targetDate = LocalDate.now().plusDays(days.toLong())
                     val formattedDate = targetDate.format(TARGET_DATE_FORMATTER)
-                    levelUpEstimateMsg = "예상 레벨업 날짜 : $formattedDate(${days}일 후)"
+                    levelUpEstimateMsg = "예상 레벨업 날짜: $formattedDate(${days}일 후)"
                 }
             }
 
@@ -223,9 +223,9 @@ class NexonServiceImpl(
             if (charWorldInfo.isNotBlank()) {
                 append("$charWorldInfo\n")
             }
-            append("현재 레벨 : $curLevel\n")
-            append("목표 레벨 : $actualTargetLevel\n")
-            append("예상 달성 날짜 : $formattedDate(${estimatedDays}일 후)")
+            append("현재 레벨: $curLevel\n")
+            append("목표 레벨: $actualTargetLevel\n")
+            append("예상 달성 날짜: $formattedDate(${estimatedDays}일 후)")
         }
 
         ResponseDto(message)
@@ -535,12 +535,12 @@ class NexonServiceImpl(
                 // 캐싱 조건 검사 (오늘 데이터 제외)
                 if (cacheable) {
                     // 기존 방식: 퍼센테이지 저장
-                    redisService.saveHistory(dto.character_name, date, "$formattedDate : $levelInfo")
+                    redisService.saveHistory(dto.character_name, date, "$formattedDate: $levelInfo")
                     // 신규 방식: 레벨/실제경험치 저장 (character_level, character_exp)
                     redisService.saveLevelExp(dto.character_name, date, level, exp)
                 }
 
-                listOf(characterInfo, "$formattedDate : $levelInfo", level.toString(), exp.toString())
+                listOf(characterInfo, "$formattedDate: $levelInfo", level.toString(), exp.toString())
             }
         }
     }
