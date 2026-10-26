@@ -261,8 +261,25 @@ class NexonServiceImplTest {
         routes["/maplestory/v1/character/symbol-equipment"] = { jsonResponse(400, errorBody("OPENAPI00010")) }
 
         val res = nexonService.symbol("묵호")
-        // Phase 0: 기존 코드는 OPENAPI00010 분기가 없어 기록 없음으로 반환됨
-        assertEquals("2023년 12월 21일 이후의 접속 기록이 없습니다.", res.message)
+        assertEquals("정보 - 서버 점검 중에는 이용 불가합니다.", res.message)
+    }
+
+    @Test
+    fun `symbol returns api maintenance message on 503 OPENAPI00011`() {
+        stubOcid()
+        routes["/maplestory/v1/character/symbol-equipment"] = { jsonResponse(503, errorBody("OPENAPI00011")) }
+
+        val res = nexonService.symbol("묵호")
+        assertEquals("Nexon API 점검 중입니다.", res.message)
+    }
+
+    @Test
+    fun `symbol returns data preparing message on OPENAPI00009`() {
+        stubOcid()
+        routes["/maplestory/v1/character/symbol-equipment"] = { jsonResponse(400, errorBody("OPENAPI00009")) }
+
+        val res = nexonService.symbol("묵호")
+        assertEquals("데이터 준비 중입니다. 잠시 후 다시 시도해주세요.", res.message)
     }
 
     // ==================== abil ====================
@@ -323,8 +340,7 @@ class NexonServiceImplTest {
         routes["/maplestory/v1/character/item-equipment"] = { jsonResponse(403, errorBody("OPENAPI00002")) }
 
         val res = nexonService.ring("묵호")
-        // Phase 0: 기존 코드는 공용 키 호출인데도 API Key 안내를 반환함
-        assertEquals("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.", res.message)
+        assertEquals("API 오류 발생", res.message)
     }
 
     // ==================== history & levelUp ====================
@@ -414,8 +430,7 @@ class NexonServiceImplTest {
         routes["/maplestory/v1/scheduler/character-state"] = { jsonResponse(403, errorBody("OPENAPI00002")) }
 
         val res = nexonService.boss("묵호", encryptedKey)
-        // Phase 0: 기존 코드는 사용자 키 호출인데도 일반 API 오류를 반환함
-        assertEquals("API 오류 발생", res.message)
+        assertEquals("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.", res.message)
     }
 
     @Test
