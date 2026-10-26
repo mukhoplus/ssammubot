@@ -4,6 +4,7 @@ import com.mukho.ssammubot.model.*
 import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.NexonService
 import com.mukho.ssammubot.service.RedisService
+import com.mukho.ssammubot.service.impl.nexon.NexonMessage
 import com.mukho.ssammubot.utils.CryptoUtil
 import com.mukho.ssammubot.utils.ExperienceUtil
 import org.springframework.stereotype.Service
@@ -12,7 +13,6 @@ import reactor.core.publisher.Mono
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import kotlin.compareTo
 import kotlin.math.ceil
 
 @Service("nexonService")
@@ -22,32 +22,21 @@ class NexonServiceImpl(
     private val apiLogService: ApiLogService
 ): NexonService {
 
-    private fun isErrorResponse(ocid: String): Boolean {
-        return ocid.startsWith("닉네임을 다시 확인해주세요") ||
-               ocid.startsWith("API 오류 발생") ||
-               ocid.startsWith("사용량이 많습니다. 다시 시도해주세요.") ||
-               ocid.startsWith("Nexon API 서버 오류 발생")
-    }
-
-    private fun formatErrorMessage(ocid: String): String {
-        return if (ocid.startsWith("닉네임을 다시 확인해주세요")) "닉네임을 다시 확인해주세요." else ocid
-    }
-
     override fun scouter(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
-        
+
         return try {
-            var ocid = fetchOcid(characterName)
-            
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+            val ocid = fetchOcid(characterName)
+
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
-            
+
             val result = ResponseDto("https://maplescouter.com/info?name=$characterName")
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("scouter", parameters, result, processingTime)
-            
+
             result
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
@@ -59,28 +48,28 @@ class NexonServiceImpl(
     override fun info(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
-        
+
         return try {
             var ocid = fetchOcid(characterName)
-            
-            val result = if (isErrorResponse(ocid)) {
-                ResponseDto(formatErrorMessage(ocid))
+
+            val result = if (NexonMessage.isError(ocid)) {
+                ResponseDto(ocid)
             } else {
                 var infoResultStr = fetchInfoResult(ocid, characterName)
-                
+
                 // OPENAPI00003 등으로 인해 닉네임 확인 메시지가 반환된 경우 1회 자동 재시도
-                if (infoResultStr.startsWith("닉네임을 다시 확인해주세요")) {
+                if (infoResultStr == NexonMessage.CHECK_NICKNAME) {
                     ocid = fetchOcid(characterName, forceRefresh = true)
-                    if (!isErrorResponse(ocid)) {
+                    if (!NexonMessage.isError(ocid)) {
                         infoResultStr = fetchInfoResult(ocid, characterName)
                     }
                 }
                 ResponseDto(infoResultStr)
             }
-            
+
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("info", parameters, result, processingTime)
-            
+
             result
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
@@ -96,25 +85,25 @@ class NexonServiceImpl(
                     val infoResult = tuple.t1
                     val statResult = tuple.t2
                     val unionResult = tuple.t3
-                    
+
                     when {
-                        infoResult.startsWith("닉네임을 다시 확인해주세요") -> "닉네임을 다시 확인해주세요"
-                        statResult.startsWith("닉네임을 다시 확인해주세요") -> "닉네임을 다시 확인해주세요"
-                        infoResult.startsWith("정보 - 서버 점검 중에는 이용 불가합니다.") -> "정보 - 서버 점검 중에는 이용 불가합니다."
-                        infoResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                        infoResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                        infoResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                        infoResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
-                        statResult.startsWith("2023년 12월 21일 이후의 접속 기록이 없습니다.") -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
-                        statResult.startsWith("API 오류 발생") -> "API 오류 발생"
-                        statResult.startsWith("사용량이 많습니다. 다시 시도해주세요") -> "사용량이 많습니다. 다시 시도해주세요."
-                        statResult.startsWith("Nexon API 서버 오류 발생") -> "Nexon API 서버 오류 발생"
+                        infoResult == NexonMessage.CHECK_NICKNAME -> NexonMessage.CHECK_NICKNAME
+                        statResult == NexonMessage.CHECK_NICKNAME -> NexonMessage.CHECK_NICKNAME
+                        infoResult == NexonMessage.MAINTENANCE -> NexonMessage.MAINTENANCE
+                        infoResult == NexonMessage.NO_RECORD -> NexonMessage.NO_RECORD
+                        infoResult == NexonMessage.API_ERROR -> NexonMessage.API_ERROR
+                        infoResult == NexonMessage.TOO_MANY_REQUESTS -> NexonMessage.TOO_MANY_REQUESTS
+                        infoResult == NexonMessage.SERVER_ERROR -> NexonMessage.SERVER_ERROR
+                        statResult == NexonMessage.NO_RECORD -> NexonMessage.NO_RECORD
+                        statResult == NexonMessage.API_ERROR -> NexonMessage.API_ERROR
+                        statResult == NexonMessage.TOO_MANY_REQUESTS -> NexonMessage.TOO_MANY_REQUESTS
+                        statResult == NexonMessage.SERVER_ERROR -> NexonMessage.SERVER_ERROR
                         else -> infoResult + statResult + unionResult
                     }
                 }
-                .block() ?: "API 오류 발생"
+                .block() ?: NexonMessage.API_ERROR
         } catch (e: Exception) {
-            "API 오류 발생"
+            NexonMessage.API_ERROR
         }
     }
 
@@ -123,14 +112,14 @@ class NexonServiceImpl(
         val parameters = mapOf("characterName" to characterName)
         return try {
             var ocid = fetchOcid(characterName)
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
 
             var historyStr = fetchHistoryResult(ocid, characterName)
-            if (historyStr.startsWith("닉네임을 다시 확인해주세요")) {
+            if (historyStr == NexonMessage.CHECK_NICKNAME) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!isErrorResponse(ocid)) {
+                if (!NexonMessage.isError(ocid)) {
                     historyStr = fetchHistoryResult(ocid, characterName)
                 }
             }
@@ -165,10 +154,10 @@ class NexonServiceImpl(
                     val characterBasic: List<String>? = getHistory(ocid, date, characterName).block()
                     if (!characterBasic.isNullOrEmpty()) {
                         if (characterBasic.size == 1) {
-                            if (characterBasic[0].startsWith("닉네임을 다시 확인해주세요")) {
-                                return "닉네임을 다시 확인해주세요"
+                            if (characterBasic[0] == NexonMessage.CHECK_NICKNAME) {
+                                return NexonMessage.CHECK_NICKNAME
                             }
-                            if (characterBasic[0].startsWith("2023년")) {
+                            if (characterBasic[0] == NexonMessage.NO_RECORD) {
                                 isValidId = false
                                 break
                             }
@@ -199,9 +188,9 @@ class NexonServiceImpl(
             buildString {
                 if (expData.isEmpty()) {
                     if (isValidId) {
-                        append("히스토리 데이터가 없습니다.")
+                        append(NexonMessage.NO_HISTORY)
                     } else {
-                        append("2023년 12월 21일 이후의 접속 기록이 없습니다.")
+                        append(NexonMessage.NO_RECORD)
                     }
                 } else {
                     if (!charWorldInfo.isNullOrBlank()) {
@@ -216,33 +205,33 @@ class NexonServiceImpl(
                 }
             }
         } catch (e: Exception) {
-            "API 오류 발생"
+            NexonMessage.API_ERROR
         }
     }
 
     override fun symbol(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
-        
+
         return try {
             var ocid = fetchOcid(characterName)
-            
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
 
-            var symbolResult = getSymbol(characterName, ocid).block() ?: "API 오류 발생"
-            if (symbolResult.startsWith("닉네임을 다시 확인해주세요")) {
+            var symbolResult = getSymbol(characterName, ocid).block() ?: NexonMessage.API_ERROR
+            if (symbolResult == NexonMessage.CHECK_NICKNAME) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!isErrorResponse(ocid)) {
-                    symbolResult = getSymbol(characterName, ocid).block() ?: "API 오류 발생"
+                if (!NexonMessage.isError(ocid)) {
+                    symbolResult = getSymbol(characterName, ocid).block() ?: NexonMessage.API_ERROR
                 }
             }
-            
+
             val result = ResponseDto(symbolResult)
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("symbol", parameters, result, processingTime)
-            
+
             result
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
@@ -254,26 +243,26 @@ class NexonServiceImpl(
     override fun abil(characterName: String): ResponseDto {
         val startTime = System.currentTimeMillis()
         val parameters = mapOf("characterName" to characterName)
-        
+
         return try {
             var ocid = fetchOcid(characterName)
-            
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
-            
-            var abilityResult = getAbility(characterName, ocid).block() ?: "API 오류 발생"
-            if (abilityResult.startsWith("닉네임을 다시 확인해주세요")) {
+
+            var abilityResult = getAbility(characterName, ocid).block() ?: NexonMessage.API_ERROR
+            if (abilityResult == NexonMessage.CHECK_NICKNAME) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!isErrorResponse(ocid)) {
-                    abilityResult = getAbility(characterName, ocid).block() ?: "API 오류 발생"
+                if (!NexonMessage.isError(ocid)) {
+                    abilityResult = getAbility(characterName, ocid).block() ?: NexonMessage.API_ERROR
                 }
             }
-            
+
             val result = ResponseDto(abilityResult)
             val processingTime = System.currentTimeMillis() - startTime
             apiLogService.logApiCall("abil", parameters, result, processingTime)
-            
+
             result
         } catch (e: Exception) {
             val processingTime = System.currentTimeMillis() - startTime
@@ -291,21 +280,21 @@ class NexonServiceImpl(
         val parameters: Map<String, Any?> = mapOf("characterName" to characterName, "targetLevel" to targetLevel)
         return try {
             var ocid = fetchOcid(characterName)
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
 
             val lastWeekDates = getLastWeekDates()
             var levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
             if (levelExpHistory.isEmpty()) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!isErrorResponse(ocid)) {
+                if (!NexonMessage.isError(ocid)) {
                     levelExpHistory = getOrFetchLevelExpHistory(characterName, ocid, lastWeekDates)
                 }
             }
 
             if (levelExpHistory.isEmpty()) {
-                return ResponseDto("최근 경험치 데이터가 없습니다.")
+                return ResponseDto(NexonMessage.NO_RECENT_EXP)
             }
 
             val (curLevel, curExp) = levelExpHistory.last()
@@ -368,15 +357,15 @@ class NexonServiceImpl(
         return try {
             var ocid = fetchOcid(characterName)
 
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
 
-            var ringResult = getRing(characterName, ocid).block() ?: "API 오류 발생"
-            if (ringResult.startsWith("닉네임을 다시 확인해주세요")) {
+            var ringResult = getRing(characterName, ocid).block() ?: NexonMessage.API_ERROR
+            if (ringResult == NexonMessage.CHECK_NICKNAME) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!isErrorResponse(ocid)) {
-                    ringResult = getRing(characterName, ocid).block() ?: "API 오류 발생"
+                if (!NexonMessage.isError(ocid)) {
+                    ringResult = getRing(characterName, ocid).block() ?: NexonMessage.API_ERROR
                 }
             }
 
@@ -416,23 +405,23 @@ class NexonServiceImpl(
 
         return try {
             if (apiKey.isNullOrBlank()) {
-                return ResponseDto("/키등록 명령어를 통해 NEXON Open API에서 발급받은 본인의 API_KEY를 등록해주세요.\n사용법: 키등록 [API_KEY]")
+                return ResponseDto(NexonMessage.API_KEY_REQUIRED)
             }
 
             val decryptedApiKey = CryptoUtil.decrypt(apiKey)
-                ?: return ResponseDto("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.")
+                ?: return ResponseDto(NexonMessage.INVALID_API_KEY)
 
             var ocid = fetchOcid(characterName)
 
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
 
-            var bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: "API 오류 발생"
-            if (bossResult.startsWith("닉네임을 다시 확인해주세요")) {
+            var bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: NexonMessage.API_ERROR
+            if (bossResult == NexonMessage.CHECK_NICKNAME) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!isErrorResponse(ocid)) {
-                    bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: "API 오류 발생"
+                if (!NexonMessage.isError(ocid)) {
+                    bossResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).block() ?: NexonMessage.API_ERROR
                 }
             }
 
@@ -454,23 +443,23 @@ class NexonServiceImpl(
 
         return try {
             if (apiKey.isNullOrBlank()) {
-                return ResponseDto("/키등록 명령어를 통해 NEXON Open API에서 발급받은 본인의 API_KEY를 등록해주세요.\n사용법: 키등록 [API_KEY]")
+                return ResponseDto(NexonMessage.API_KEY_REQUIRED)
             }
 
             val decryptedApiKey = CryptoUtil.decrypt(apiKey)
-                ?: return ResponseDto("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.")
+                ?: return ResponseDto(NexonMessage.INVALID_API_KEY)
 
             var ocid = fetchOcid(characterName)
 
-            if (isErrorResponse(ocid)) {
-                return ResponseDto(formatErrorMessage(ocid))
+            if (NexonMessage.isError(ocid)) {
+                return ResponseDto(ocid)
             }
 
-            var questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: "API 오류 발생"
-            if (questResult.startsWith("닉네임을 다시 확인해주세요")) {
+            var questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: NexonMessage.API_ERROR
+            if (questResult == NexonMessage.CHECK_NICKNAME) {
                 ocid = fetchOcid(characterName, forceRefresh = true)
-                if (!isErrorResponse(ocid)) {
-                    questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: "API 오류 발생"
+                if (!NexonMessage.isError(ocid)) {
+                    questResult = getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).block() ?: NexonMessage.API_ERROR
                 }
             }
 
@@ -527,24 +516,24 @@ class NexonServiceImpl(
                                     dto.ocid
                                 }
                         }
-                        400 -> Mono.just("닉네임을 다시 확인해주세요.")
-                        403 -> Mono.just("API 오류 발생")
-                        429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                        500 -> Mono.just("Nexon API 서버 오류 발생")
+                        400 -> Mono.just(NexonMessage.CHECK_NICKNAME)
+                        403 -> Mono.just(NexonMessage.API_ERROR)
+                        429 -> Mono.just(NexonMessage.TOO_MANY_REQUESTS)
+                        500 -> Mono.just(NexonMessage.SERVER_ERROR)
                         else -> {
                             response.bodyToMono(ErrorMessageDto::class.java)
                                 .flatMap { errorBody ->
-                                    Mono.just("API 오류 발생")
+                                    Mono.just(NexonMessage.API_ERROR)
                                 }
                         }
                     }
                 }
                 .onErrorResume { ex ->
-                    Mono.just("API 오류 발생")
+                    Mono.just(NexonMessage.API_ERROR)
                 }
-                .block() ?: "API 오류 발생"
+                .block() ?: NexonMessage.API_ERROR
         } catch (e: Exception) {
-            "API 오류 발생"
+            NexonMessage.API_ERROR
         }
     }
 
@@ -567,30 +556,30 @@ class NexonServiceImpl(
                     400 -> response.bodyToMono(ErrorMessageDto::class.java)
                         .map { error ->
                             when (error.error.name) {
-                                "OPENAPI00010" -> "정보 - 서버 점검 중에는 이용 불가합니다."
+                                "OPENAPI00010" -> NexonMessage.MAINTENANCE
                                 "OPENAPI00003" -> {
                                     // OCID 무효화 처리
                                     if (!characterName.isNullOrBlank()) {
                                         invalidateOcidIfNeeded(characterName, error.error.name)
                                     }
-                                    "닉네임을 다시 확인해주세요"
+                                    NexonMessage.CHECK_NICKNAME
                                 }
-                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                else -> NexonMessage.NO_RECORD
                             }
                         }
-                    403 -> Mono.just("API 오류 발생")
-                    429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                    500 -> Mono.just("Nexon API 서버 오류 발생")
+                    403 -> Mono.just(NexonMessage.API_ERROR)
+                    429 -> Mono.just(NexonMessage.TOO_MANY_REQUESTS)
+                    500 -> Mono.just(NexonMessage.SERVER_ERROR)
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap { errorBody ->
-                                Mono.just("API 오류 발생")
+                                Mono.just(NexonMessage.API_ERROR)
                             }
                     }
                 }
             }
             .onErrorResume { ex ->
-                Mono.just("API 오류 발생")
+                Mono.just(NexonMessage.API_ERROR)
             }
     }
 
@@ -630,25 +619,25 @@ class NexonServiceImpl(
                                     if (!characterName.isNullOrBlank()) {
                                         invalidateOcidIfNeeded(characterName, error.error.name)
                                     }
-                                    "닉네임을 다시 확인해주세요"
+                                    NexonMessage.CHECK_NICKNAME
                                 }
-                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                else -> NexonMessage.NO_RECORD
                             }
                         }
-                    403 -> Mono.just("API 오류 발생")
-                    429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                    500 -> Mono.just("Nexon API 서버 오류 발생")
+                    403 -> Mono.just(NexonMessage.API_ERROR)
+                    429 -> Mono.just(NexonMessage.TOO_MANY_REQUESTS)
+                    500 -> Mono.just(NexonMessage.SERVER_ERROR)
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap { errorBody ->
-                                Mono.just("API 오류 발생")
+                                Mono.just(NexonMessage.API_ERROR)
                             }
                     }
                 }
             }
             .onErrorResume { ex ->
                 println(ex)
-                Mono.just("API 오류 발생")
+                Mono.just(NexonMessage.API_ERROR)
             }
     }
 
@@ -715,21 +704,21 @@ class NexonServiceImpl(
                     response.bodyToMono(ErrorMessageDto::class.java)
                         .flatMap { error ->
                             when (error.error.name) {
-                                "OPENAPI00010" -> Mono.just(listOf("정보 - 서버 점검 중에는 이용 불가합니다."))
+                                "OPENAPI00010" -> Mono.just(listOf(NexonMessage.MAINTENANCE))
                                 "OPENAPI00003" -> {
                                     // OCID 무효화 처리
                                     if (!characterName.isNullOrBlank()) {
                                         invalidateOcidIfNeeded(characterName, error.error.name)
                                     }
-                                    Mono.just(listOf("닉네임을 다시 확인해주세요"))
+                                    Mono.just(listOf(NexonMessage.CHECK_NICKNAME))
                                 }
-                                else -> Mono.just(listOf("2023년 12월 21일 이후의 접속 기록이 없습니다."))
+                                else -> Mono.just(listOf(NexonMessage.NO_RECORD))
                             }
                         }
                 }
             }
             .onErrorResume {
-                Mono.just(listOf("API 오류 발생"))
+                Mono.just(listOf(NexonMessage.API_ERROR))
             }
     }
 
@@ -742,7 +731,7 @@ class NexonServiceImpl(
                         response.bodyToMono(CharacterSymbolEquipmentDto::class.java)
                             .map { dto ->
                                 if (dto.symbol.isEmpty()) {
-                                    "심볼 정보가 없습니다."
+                                    NexonMessage.NO_SYMBOL
                                 } else {
                                     formatSymbolInfo(characterName, dto.symbol)
                                 }
@@ -754,24 +743,24 @@ class NexonServiceImpl(
                                 "OPENAPI00003" -> {
                                     // OCID 무효화 처리
                                     invalidateOcidIfNeeded(characterName, error.error.name)
-                                    "닉네임을 다시 확인해주세요"
+                                    NexonMessage.CHECK_NICKNAME
                                 }
-                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                else -> NexonMessage.NO_RECORD
                             }
                         }
-                    403 -> Mono.just("API 오류 발생")
-                    429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                    500 -> Mono.just("Nexon API 서버 오류 발생")
+                    403 -> Mono.just(NexonMessage.API_ERROR)
+                    429 -> Mono.just(NexonMessage.TOO_MANY_REQUESTS)
+                    500 -> Mono.just(NexonMessage.SERVER_ERROR)
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap { errorBody ->
-                                Mono.just("API 오류 발생")
+                                Mono.just(NexonMessage.API_ERROR)
                             }
                     }
                 }
             }
             .onErrorResume { ex ->
-                Mono.just("API 오류 발생")
+                Mono.just(NexonMessage.API_ERROR)
             }
     }
 
@@ -845,24 +834,24 @@ class NexonServiceImpl(
                                 "OPENAPI00003" -> {
                                     // OCID 무효화 처리
                                     invalidateOcidIfNeeded(characterName, error.error.name)
-                                    "닉네임을 다시 확인해주세요"
+                                    NexonMessage.CHECK_NICKNAME
                                 }
-                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                else -> NexonMessage.NO_RECORD
                             }
                         }
-                    403 -> Mono.just("API 오류 발생")
-                    429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                    500 -> Mono.just("Nexon API 서버 오류 발생")
+                    403 -> Mono.just(NexonMessage.API_ERROR)
+                    429 -> Mono.just(NexonMessage.TOO_MANY_REQUESTS)
+                    500 -> Mono.just(NexonMessage.SERVER_ERROR)
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap { errorBody ->
-                                Mono.just("API 오류 발생")
+                                Mono.just(NexonMessage.API_ERROR)
                             }
                     }
                 }
             }
             .onErrorResume { ex ->
-                Mono.just("API 오류 발생")
+                Mono.just(NexonMessage.API_ERROR)
             }
     }
 
@@ -906,7 +895,7 @@ class NexonServiceImpl(
      */
     private fun getOrFetchLevelExpHistory(characterName: String, ocid: String, dates: List<String>): List<Pair<Int, Long>> {
         val result = mutableListOf<Pair<Int, Long>>()
-        
+
         for (date in dates) {
             val redisData = redisService.getLevelExp(characterName, date)
             if (redisData != null) {
@@ -1000,28 +989,28 @@ class NexonServiceImpl(
                     400 -> response.bodyToMono(ErrorMessageDto::class.java)
                         .map { error ->
                             when (error.error.name) {
-                                "OPENAPI00010" -> "정보 - 서버 점검 중에는 이용 불가합니다."
+                                "OPENAPI00010" -> NexonMessage.MAINTENANCE
                                 "OPENAPI00003" -> {
                                     invalidateOcidIfNeeded(characterName, error.error.name)
-                                    "닉네임을 다시 확인해주세요"
+                                    NexonMessage.CHECK_NICKNAME
                                 }
-                                "OPENAPI00002", "OPENAPI00005" -> "유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요."
-                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                "OPENAPI00002", "OPENAPI00005" -> NexonMessage.INVALID_API_KEY
+                                else -> NexonMessage.NO_RECORD
                             }
                         }
-                    403 -> Mono.just("유효하지 않은 API Key입니다. /키등록 명령어를 통해 다시 등록해주세요.")
-                    429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                    500 -> Mono.just("Nexon API 서버 오류 발생")
+                    403 -> Mono.just(NexonMessage.INVALID_API_KEY)
+                    429 -> Mono.just(NexonMessage.TOO_MANY_REQUESTS)
+                    500 -> Mono.just(NexonMessage.SERVER_ERROR)
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap {
-                                Mono.just("API 오류 발생")
+                                Mono.just(NexonMessage.API_ERROR)
                             }
                     }
                 }
             }
             .onErrorResume {
-                Mono.just("API 오류 발생")
+                Mono.just(NexonMessage.API_ERROR)
             }
     }
 
@@ -1050,29 +1039,29 @@ class NexonServiceImpl(
                     400 -> response.bodyToMono(ErrorMessageDto::class.java)
                         .map { error ->
                             when (error.error.name) {
-                                "OPENAPI00010" -> "정보 - 서버 점검 중에는 이용 불가합니다."
+                                "OPENAPI00010" -> NexonMessage.MAINTENANCE
                                 "OPENAPI00003" -> {
-                                    "닉네임을 다시 확인해주세요"
+                                    NexonMessage.CHECK_NICKNAME
                                 }
                                 "OPENAPI00004" -> {
-                                    "자신의 계정에 속한 캐릭터만 조회가 가능합니다."
+                                    NexonMessage.NOT_OWN_CHARACTER
                                 }
-                                else -> "2023년 12월 21일 이후의 접속 기록이 없습니다."
+                                else -> NexonMessage.NO_RECORD
                             }
                         }
-                    403 -> Mono.just("API 오류 발생")
-                    429 -> Mono.just("사용량이 많습니다. 다시 시도해주세요.")
-                    500 -> Mono.just("Nexon API 서버 오류 발생")
+                    403 -> Mono.just(NexonMessage.API_ERROR)
+                    429 -> Mono.just(NexonMessage.TOO_MANY_REQUESTS)
+                    500 -> Mono.just(NexonMessage.SERVER_ERROR)
                     else -> {
                         response.bodyToMono(ErrorMessageDto::class.java)
                             .flatMap {
-                                Mono.just("API 오류 발생")
+                                Mono.just(NexonMessage.API_ERROR)
                             }
                     }
                 }
             }
             .onErrorResume {
-                Mono.just("API 오류 발생")
+                Mono.just(NexonMessage.API_ERROR)
             }
     }
 
