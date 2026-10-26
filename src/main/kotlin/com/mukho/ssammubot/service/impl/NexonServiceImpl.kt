@@ -246,7 +246,7 @@ class NexonServiceImpl(
             val decryptedApiKey = decryptApiKeyOrError(apiKey)
                 .getOrElse { return@logged ResponseDto(it.message ?: NexonMessage.INVALID_API_KEY) }
 
-            ResponseDto(withOcidRetry(characterName) { ocid ->
+            ResponseDto(withOcidRetry(characterName, apiKey = decryptedApiKey) { ocid ->
                 getScheduler(characterName, ocid, decryptedApiKey, ::formatBossInfo).blockOrError()
             })
         }
@@ -256,7 +256,7 @@ class NexonServiceImpl(
             val decryptedApiKey = decryptApiKeyOrError(apiKey)
                 .getOrElse { return@logged ResponseDto(it.message ?: NexonMessage.INVALID_API_KEY) }
 
-            ResponseDto(withOcidRetry(characterName) { ocid ->
+            ResponseDto(withOcidRetry(characterName, apiKey = decryptedApiKey) { ocid ->
                 getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).blockOrError()
             })
         }
@@ -283,11 +283,12 @@ class NexonServiceImpl(
 
     private inline fun <T> withOcidRetry(
         characterName: String,
+        apiKey: String? = null,
         shouldRetry: (T) -> Boolean,
         onOcidError: (String) -> T,
         fetch: (ocid: String) -> T,
     ): T {
-        val ocid = fetchOcid(characterName)
+        val ocid = fetchOcid(characterName, apiKey = apiKey)
         if (NexonMessage.isError(ocid)) {
             return onOcidError(ocid)
         }
@@ -297,13 +298,18 @@ class NexonServiceImpl(
             return first
         }
 
-        val refreshed = fetchOcid(characterName, forceRefresh = true)
+        val refreshed = fetchOcid(characterName, forceRefresh = true, apiKey = apiKey)
         return if (NexonMessage.isError(refreshed)) first else fetch(refreshed)
     }
 
-    private fun withOcidRetry(characterName: String, fetch: (ocid: String) -> String): String =
+    private fun withOcidRetry(
+        characterName: String,
+        apiKey: String? = null,
+        fetch: (ocid: String) -> String,
+    ): String =
         withOcidRetry(
             characterName = characterName,
+            apiKey = apiKey,
             shouldRetry = { it == NexonMessage.CHECK_NICKNAME },
             onOcidError = { it },
             fetch = fetch,
@@ -398,7 +404,11 @@ class NexonServiceImpl(
         }
     }
 
-    private fun fetchOcid(characterName: String, forceRefresh: Boolean = false): String {
+    private fun fetchOcid(
+        characterName: String,
+        forceRefresh: Boolean = false,
+        apiKey: String? = null,
+    ): String {
         if (!forceRefresh) {
             val cachedOcid = try {
                 redisService.getOcid(characterName)
@@ -418,6 +428,7 @@ class NexonServiceImpl(
                 uri = "/id?character_name=$characterName",
                 bodyType = CharacterDto::class.java,
                 characterName = null,
+                apiKey = apiKey,
                 policy = NexonErrorPolicy.OCID,
             ) { dto ->
                 redisService.saveOcid(characterName, dto.ocid)

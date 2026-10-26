@@ -17,6 +17,10 @@ internal data class NexonErrorPolicy(
         )
 
         val OCID = NexonErrorPolicy(
+            codeMessages = mapOf(
+                "OPENAPI00005" to NexonMessage.INVALID_API_KEY,
+            ),
+            forbiddenMessage = NexonMessage.INVALID_API_KEY,
             fallback400 = NexonMessage.CHECK_NICKNAME,
         )
     }
