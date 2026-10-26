@@ -71,4 +71,37 @@ class NexonController(private val nexonService: NexonService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @PostMapping("/key")
+    fun encryptKey(@RequestHeader("x-nxopen-api-key") apiKey: String): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.encryptKey(apiKey))
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
+
+    @GetMapping("/boss")
+    fun boss(
+        @RequestParam characterName: String,
+        @RequestHeader("x-nxopen-api-key", required = false) apiKey: String?
+    ): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.boss(characterName, apiKey))
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
+
+    @GetMapping("/quest")
+    fun quest(
+        @RequestParam characterName: String,
+        @RequestHeader("x-nxopen-api-key", required = false) apiKey: String?
+    ): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.quest(characterName, apiKey))
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }
