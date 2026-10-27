@@ -716,8 +716,8 @@ class NexonServiceImpl(
         }
     }
 
-    private fun formatSection(title: String, lines: List<String>): String {
-        val body = if (lines.isEmpty()) "- 등록된 항목 없음" else lines.joinToString("\n")
+    private fun formatSection(title: String, lines: List<String>, emptyMessage: String = "- 등록된 항목이 없습니다."): String {
+        val body = if (lines.isEmpty()) emptyMessage else lines.joinToString("\n")
         return "$title\n$body"
     }
 
@@ -781,10 +781,10 @@ class NexonServiceImpl(
             }
 
         return listOf(
-            "$characterName - 일퀘 정보",
-            formatSection("[일일 퀘스트]", dailyQuestLines),
-            formatSection("[주간 퀘스트]", weeklyQuestLines),
-            formatSection("[계정 콘텐츠]", accountContentLines),
+            "$characterName - 일일/주간 퀘스트, 계정 콘텐츠 정보",
+            formatSection("[일일 퀘스트]", dailyQuestLines, "- 등록된 항목이 없거나 당일 접속 기록이 없습니다."),
+            formatSection("[주간 퀘스트]", weeklyQuestLines, "- 등록된 항목이 없거나 이번 주 접속 기록이 없습니다."),
+            formatSection("[계정 콘텐츠]", accountContentLines, "- 등록된 항목이 없거나 당일 접속 기록이 없습니다."),
         ).joinToString("\n")
     }
 }
