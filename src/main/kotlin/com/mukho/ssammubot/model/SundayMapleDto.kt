@@ -3,7 +3,6 @@ package com.mukho.ssammubot.model
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import java.time.LocalDateTime
-import java.time.OffsetDateTime
 import java.time.ZoneId
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -79,10 +78,7 @@ data class SundayMapleInfo(
     fun isValidNow(now: LocalDateTime = LocalDateTime.now(KST)): Boolean {
         return try {
             val expiresAtTime = LocalDateTime.parse(expiresAt)
-            val eventEndAtTime = OffsetDateTime.parse(eventEndAt)
-                .atZoneSameInstant(KST)
-                .toLocalDateTime()
-            now.isBefore(expiresAtTime) && now.isBefore(eventEndAtTime) && benefits.isNotEmpty()
+            now.isBefore(expiresAtTime) && benefits.isNotEmpty()
         } catch (e: Exception) {
             false
         }

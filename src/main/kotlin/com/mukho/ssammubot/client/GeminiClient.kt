@@ -24,8 +24,16 @@ class GeminiClientImpl(
 
     private val logger = LoggerFactory.getLogger(GeminiClientImpl::class.java)
 
+    @Volatile
+    private var cachedFlashModels: List<String>? = null
+
+    @Volatile
+    private var modelsCacheExpiresAtMs: Long = 0L
+
     companion object {
         private const val MODELS_ENDPOINT = "/v1beta/models"
+        private const val MAX_CANDIDATE_MODELS = 3
+        private const val MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000L
         const val SHINING_STARFORCE_HEADER = "★샤이닝 스타포스 타임★"
 
         private val DEFAULT_FALLBACK_MODELS = listOf(
@@ -72,18 +80,16 @@ class GeminiClientImpl(
                 .map { it.trim().removePrefix("-").trim() }
                 .filter { it.isNotEmpty() }
 
-            val hasShiningStarforce = cleaned.any {
-                it.replace(Regex("\\s+"), "").contains("샤이닝스타포스타임")
+            fun isShiningStarforceHeader(text: String): Boolean {
+                val normalized = text.replace(Regex("[^가-힣a-zA-Z0-9]"), "")
+                return normalized.contains("샤이닝스타포스타임")
             }
 
-            if (!hasShiningStarforce) {
+            if (cleaned.none(::isShiningStarforceHeader)) {
                 return cleaned
             }
 
-            val remaining = cleaned.filter { item ->
-                val normalized = item.replace(Regex("[★☆*\\[\\]\\s]"), "")
-                normalized != "샤이닝스타포스타임"
-            }
+            val remaining = cleaned.filterNot(::isShiningStarforceHeader)
 
             return listOf(SHINING_STARFORCE_HEADER) + remaining
         }
@@ -94,7 +100,7 @@ class GeminiClientImpl(
 
         val base64Image = Base64.getEncoder().encodeToString(imageBytes)
         val requestBody = buildRequestBody(base64Image, mimeType)
-        val candidateModels = getSortedFlashModels()
+        val candidateModels = getSortedFlashModels().take(MAX_CANDIDATE_MODELS)
 
         var lastException: Exception? = null
 
@@ -139,7 +145,15 @@ class GeminiClientImpl(
 
     internal fun getSortedFlashModels(): List<String> {
         if (preferredModel.isNotBlank()) {
-            return listOf(preferredModel.removePrefix("models/").trim())
+            val preferred = preferredModel.removePrefix("models/").trim()
+            return (listOf(preferred) + DEFAULT_FALLBACK_MODELS).distinct()
+        }
+
+        val nowMs = System.currentTimeMillis()
+        cachedFlashModels?.let { cached ->
+            if (nowMs < modelsCacheExpiresAtMs) {
+                return cached
+            }
         }
 
         return try {
@@ -168,7 +182,13 @@ class GeminiClientImpl(
                 if (rawName.contains("flash") && getModelSortScore(rawName) > 0) rawName else null
             }.sortedByDescending { getModelSortScore(it) }
 
-            flashModels.ifEmpty { DEFAULT_FALLBACK_MODELS }
+            if (flashModels.isNotEmpty()) {
+                cachedFlashModels = flashModels
+                modelsCacheExpiresAtMs = nowMs + MODEL_CACHE_TTL_MS
+                flashModels
+            } else {
+                DEFAULT_FALLBACK_MODELS
+            }
         } catch (e: Exception) {
             logger.warn("Failed to fetch Gemini model list ({}), using default fallback models.", e.message)
             DEFAULT_FALLBACK_MODELS
