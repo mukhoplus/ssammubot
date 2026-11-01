@@ -2,6 +2,7 @@ package com.mukho.ssammubot.service.impl
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.mukho.ssammubot.client.GeminiClient
+import com.mukho.ssammubot.client.GeminiClientImpl
 import com.mukho.ssammubot.model.ResponseDto
 import com.mukho.ssammubot.model.SundayMapleGeminiResult
 import com.mukho.ssammubot.model.SundayMapleInfo
@@ -569,7 +570,12 @@ class NexonServiceImplTest {
             imageUrl = "https://lwi.nexon.com/sunday.jpg",
             eventDate = "2026년 11월 1일(일)",
             isSpecial = true,
-            benefits = listOf("어빌리티 재설정 비용 50% 할인", "룬 경험치 버프 효과 +100%"),
+            benefits = listOf(
+                "샤이닝 스타포스 타임",
+                "스타포스 강화 비용 30% 할인",
+                "21성 이하에서 스타포스 강화 시 파괴 확률 30% 감소",
+                "흔적 복구 비용 20% 할인"
+            ),
             eventEndAt = "2026-11-01T23:59:00+09:00",
             cachedAt = "2026-10-30T10:00:10",
             expiresAt = "2026-11-02T00:00:00"
@@ -578,14 +584,12 @@ class NexonServiceImplTest {
 
         val res = service.sunday()
         val expected = """
-            [스페셜 썬데이 메이플]
-            일시: 2026년 11월 1일(일)
+            2026년 11월 1일(일) [스페셜 썬데이 메이플]
 
-            * 주요 혜택
-            - 어빌리티 재설정 비용 50% 할인
-            - 룬 경험치 버프 효과 +100%
-
-            공지 링크: https://maplestory.nexon.com/News/Event/Ongoing/987
+            ★샤이닝 스타포스 타임★
+            - 스타포스 강화 비용 30% 할인
+            - 21성 이하에서 스타포스 강화 시 파괴 확률 30% 감소
+            - 흔적 복구 비용 20% 할인
         """.trimIndent()
 
         assertEquals(expected, res.message)
@@ -716,9 +720,37 @@ class NexonServiceImplTest {
 
             // Only 1 call to Nexon API and 1 call to Gemini API occurred across all threads
             assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
+            assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
             assertEquals(1, geminiCallCount.get())
         } finally {
             executor.shutdownNow()
         }
+    }
+
+    @Test
+    fun `GeminiClientImpl sorts flash models by latest version and tier priority`() {
+        val rawModels = listOf(
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+            "gemini-2.5-flash-preview-tts"
+        )
+
+        val sorted = rawModels
+            .filter { GeminiClientImpl.getModelSortScore(it) > 0 }
+            .sortedByDescending { GeminiClientImpl.getModelSortScore(it) }
+
+        assertEquals(
+            listOf(
+                "gemini-3.8-flash",
+                "gemini-3-flash-preview",
+                "gemini-flash-latest",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite"
+            ),
+            sorted
+        )
     }
 }

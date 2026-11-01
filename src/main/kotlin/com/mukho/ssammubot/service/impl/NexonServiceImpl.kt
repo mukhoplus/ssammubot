@@ -2,6 +2,7 @@ package com.mukho.ssammubot.service.impl
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.mukho.ssammubot.client.GeminiClient
+import com.mukho.ssammubot.client.GeminiClientImpl
 import com.mukho.ssammubot.model.*
 import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.NexonService
@@ -999,7 +1000,7 @@ class NexonServiceImpl(
             return NexonMessage.API_ERROR
         }
 
-        val benefits = geminiResult.benefits.map { it.trim() }.filter { it.isNotEmpty() }
+        val benefits = GeminiClientImpl.normalizeBenefits(geminiResult.benefits)
         if (geminiResult.eventDate.isBlank() || benefits.isEmpty()) {
             return NexonMessage.API_ERROR
         }
@@ -1065,13 +1066,14 @@ class NexonServiceImpl(
 
     private fun formatSundayMapleInfo(info: SundayMapleInfo): String {
         val header = if (info.isSpecial) "[스페셜 썬데이 메이플]" else "[썬데이 메이플]"
-        val benefitLines = info.benefits.joinToString("\n") { "- $it" }
-        return buildString {
-            append("${info.eventDate} $header\n\n")
-            append(benefitLines)
-            if (info.url.isNotBlank()) {
-                append("\n\n공지 링크: ${info.url}")
+        val normalizedBenefits = GeminiClientImpl.normalizeBenefits(info.benefits)
+        val benefitLines = normalizedBenefits.joinToString("\n") { benefit ->
+            if (benefit == GeminiClientImpl.SHINING_STARFORCE_HEADER) {
+                benefit
+            } else {
+                "- $benefit"
             }
         }
+        return "${info.eventDate} $header\n\n$benefitLines"
     }
 }
