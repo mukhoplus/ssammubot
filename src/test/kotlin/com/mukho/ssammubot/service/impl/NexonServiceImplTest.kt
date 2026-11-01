@@ -644,7 +644,41 @@ class NexonServiceImplTest {
     }
 
     @Test
+    fun `sunday falls back to maxNoticeId plus 1 when notice list has no active sunday maple notice`() {
+        // Friday 2026-10-30 09:56:00 KST (within 09:55~10:10 scheduler window)
+        val service = buildServiceWithClock("2026-10-30T09:56:00+09:00")
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"메이플M 연동 이벤트","url":"https://maplestory.nexon.com/1405","notice_id":1405,"date":"2026-10-29T10:00+09:00","date_event_start":"2026-10-29T10:00+09:00","date_event_end":"2026-11-11T23:59+09:00"}]}"""
+            )
+        }
+        routes["/maplestory/v1/notice-event/detail"] = { req ->
+            assertEquals("notice_id=1406", req.url().query)
+            jsonResponse(
+                200,
+                """{"title":"스페셜 썬데이 메이플","url":"https://maplestory.nexon.com/News/Event/Ongoing/1406","contents":"<img src=\"https://lwi.nexon.com/sunday1406.png\">","date":"2026-10-30T09:56+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}"""
+            )
+        }
+        routes["/sunday1406.png"] = {
+            ClientResponse.create(HttpStatus.OK)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.IMAGE_PNG_VALUE)
+                .body("fake-image-bytes")
+                .build()
+        }
+
+        val res = service.sunday()
+
+        assertTrue(res.message.contains("2026년 11월 1일(일) [썬데이 메이플]"))
+        assertTrue(res.message.contains("- 스타포스 강화 비용 30% 할인"))
+        assertNotNull(redisService.getSundayMaple())
+    }
+
+    @Test
     fun `sunday returns preparing message when only last week expired notice exists`() {
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(400, errorBody("OPENAPI00004"))
+        }
         // Friday 2026-10-30 10:00:00 KST
         val service = buildServiceWithClock("2026-10-30T10:00:00+09:00")
         routes["/maplestory/v1/notice-event"] = {
