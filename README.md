@@ -84,6 +84,10 @@ Kakaotalk Open Chatting Bot using MapleStory API
 - `/일퀘 [유저명]` 으로 현재 캐릭터의 일일/주간 퀘스트 및 계정 콘텐츠 정보 출력
 - 개인 API Key 발급 및 등록 필수
 
+### 썬데이
+
+- `/썬데이` 로 이번 주 썬데이 메이플 혜택 정보 출력
+
 ### ~~시뮬~~
 
 - ~~`/시뮬` 로 **잠재능력 시뮬레이터** 링크 출력~~
@@ -103,3 +107,4 @@ Kakaotalk Open Chatting Bot using MapleStory API
 - Nginx
 - Jenkins
 - JMeter
+- Gemini API

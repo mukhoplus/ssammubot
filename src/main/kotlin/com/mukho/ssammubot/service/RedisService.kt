@@ -13,4 +13,8 @@ interface RedisService {
     fun saveLevelExp(characterName: String, date: String, level: Int, exp: Long)
     fun getLevelExp(characterName: String, date: String): Pair<Int, Long>?
     fun getLevelExpHistory(characterName: String, dates: List<String>): List<Pair<Int, Long>>
+
+    fun saveSundayMaple(json: String, ttl: Duration)
+    fun getSundayMaple(): String?
+    fun deleteSundayMaple()
 }

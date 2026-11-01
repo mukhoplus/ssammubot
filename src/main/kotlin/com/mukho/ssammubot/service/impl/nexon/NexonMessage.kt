@@ -15,6 +15,8 @@ internal object NexonMessage {
     const val NO_HISTORY = "히스토리 데이터가 없습니다."
     const val NO_RECENT_EXP = "최근 경험치 데이터가 없습니다."
     const val NO_SYMBOL = "심볼 정보가 없습니다."
+    const val SUNDAY_WAITING = "이번 주 썬데이 메이플 공지는 금요일 오전 10시에 공개됩니다."
+    const val SUNDAY_PREPARING = "아직 이번 주 썬데이 메이플 공지가 등록되지 않았습니다. 잠시 후 다시 시도해주세요."
 
     private val ERRORS = setOf(
         API_ERROR,

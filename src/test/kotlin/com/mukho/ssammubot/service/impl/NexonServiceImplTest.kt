@@ -1,10 +1,18 @@
 package com.mukho.ssammubot.service.impl
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.mukho.ssammubot.client.GeminiClient
+import com.mukho.ssammubot.client.GeminiClientImpl
 import com.mukho.ssammubot.model.ResponseDto
+import com.mukho.ssammubot.model.SundayMapleGeminiResult
+import com.mukho.ssammubot.model.SundayMapleInfo
 import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.RedisService
 import com.mukho.ssammubot.utils.CryptoUtil
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -18,6 +26,13 @@ import org.springframework.web.reactive.function.client.WebClient
 import reactor.core.publisher.Mono
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.time.Clock
+import java.time.Duration
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class NexonServiceImplTest {
@@ -34,6 +49,9 @@ class NexonServiceImplTest {
         val ocidStore = ConcurrentHashMap<String, String>()
         val historyStore = ConcurrentHashMap<Pair<String, String>, String>()
         val levelExpStore = ConcurrentHashMap<Pair<String, String>, Pair<Int, Long>>()
+        @Volatile var sundayMapleJson: String? = null
+        @Volatile var sundayMapleTtl: Duration? = null
+        val sundayDeleteCount = AtomicInteger(0)
 
         override fun saveOcid(characterName: String, ocid: String) {
             ocidStore[characterName] = ocid
@@ -61,6 +79,19 @@ class NexonServiceImplTest {
 
         override fun getLevelExpHistory(characterName: String, dates: List<String>): List<Pair<Int, Long>> =
             dates.mapNotNull { levelExpStore[characterName to it] }
+
+        override fun saveSundayMaple(json: String, ttl: Duration) {
+            sundayMapleJson = json
+            sundayMapleTtl = ttl
+        }
+
+        override fun getSundayMaple(): String? = sundayMapleJson
+
+        override fun deleteSundayMaple() {
+            sundayMapleJson = null
+            sundayMapleTtl = null
+            sundayDeleteCount.incrementAndGet()
+        }
     }
 
     class RecordingApiLogService : ApiLogService {
@@ -473,5 +504,287 @@ class NexonServiceImplTest {
 
         val res = nexonService.quest("묵호", encryptedKey)
         assertEquals("자신의 계정에 속한 캐릭터만 조회가 가능합니다.", res.message)
+    }
+
+    // ==================== sunday ====================
+
+    private fun buildServiceWithClock(
+        isoKstDateTime: String,
+        geminiClient: GeminiClient = GeminiClient { _, _ ->
+            SundayMapleGeminiResult(
+                eventDate = "2026년 11월 1일(일)",
+                isSpecial = false,
+                benefits = listOf("스타포스 강화 비용 30% 할인", "몬스터파크 클리어 경험치 +50%")
+            )
+        }
+    ): NexonServiceImpl {
+        val kst = ZoneId.of("Asia/Seoul")
+        val fixedClock = Clock.fixed(ZonedDateTime.parse(isoKstDateTime).toInstant(), kst)
+        val exchangeFunction = ExchangeFunction { request ->
+            val path = request.url().path
+            callCounts.computeIfAbsent(path) { AtomicInteger(0) }.incrementAndGet()
+            val handler = routes[path]
+                ?: return@ExchangeFunction Mono.error(IllegalStateException("Unmocked path: $path"))
+            try {
+                Mono.just(handler(request))
+            } catch (e: Exception) {
+                Mono.error(e)
+            }
+        }
+        val testWebClient = WebClient.builder()
+            .baseUrl("https://open.api.nexon.com/maplestory/v1")
+            .exchangeFunction(exchangeFunction)
+            .build()
+        val testImageWebClient = WebClient.builder()
+            .exchangeFunction(exchangeFunction)
+            .build()
+
+        return NexonServiceImpl(
+            webClient = testWebClient,
+            redisService = redisService,
+            apiLogService = apiLogService,
+            imageWebClient = testImageWebClient,
+            geminiClient = geminiClient,
+            objectMapper = ObjectMapper(),
+            clock = fixedClock
+        )
+    }
+
+    @Test
+    fun `sunday returns waiting message during Monday to Friday before 10 AM without calling external API`() {
+        // Thursday 2026-10-29 23:00:00 KST
+        val service = buildServiceWithClock("2026-10-29T23:00:00+09:00")
+        val res = service.sunday()
+
+        assertEquals("이번 주 썬데이 메이플 공지는 금요일 오전 10시에 공개됩니다.", res.message)
+        assertNull(callCounts["/maplestory/v1/notice-event"])
+    }
+
+    @Test
+    fun `sunday returns cached data on valid cache hit without calling external API`() {
+        val service = buildServiceWithClock("2026-10-30T12:00:00+09:00")
+        val cachedInfo = SundayMapleInfo(
+            noticeId = 987L,
+            title = "썬데이 메이플",
+            url = "https://maplestory.nexon.com/News/Event/Ongoing/987",
+            imageUrl = "https://lwi.nexon.com/sunday.jpg",
+            eventDate = "2026년 11월 1일(일)",
+            isSpecial = true,
+            benefits = listOf(
+                "샤이닝 스타포스 타임",
+                "스타포스 강화 비용 30% 할인",
+                "21성 이하에서 스타포스 강화 시 파괴 확률 30% 감소",
+                "흔적 복구 비용 20% 할인"
+            ),
+            eventEndAt = "2026-11-01T23:59:00+09:00",
+            cachedAt = "2026-10-30T10:00:10",
+            expiresAt = "2026-11-02T00:00:00"
+        )
+        redisService.saveSundayMaple(ObjectMapper().writeValueAsString(cachedInfo), Duration.ofHours(60))
+
+        val res = service.sunday()
+        val expected = """
+            2026년 11월 1일(일) [스페셜 썬데이 메이플]
+
+            ★샤이닝 스타포스 타임★
+            - 스타포스 강화 비용 30% 할인
+            - 21성 이하에서 스타포스 강화 시 파괴 확률 30% 감소
+            - 흔적 복구 비용 20% 할인
+        """.trimIndent()
+
+        assertEquals(expected, res.message)
+        assertNull(callCounts["/maplestory/v1/notice-event"])
+    }
+
+    @Test
+    fun `sunday deletes expired or corrupted cache immediately and re-runs pipeline`() {
+        // Friday 2026-10-30 10:00:10 KST
+        val service = buildServiceWithClock("2026-10-30T10:00:10+09:00")
+        // Put expired cache from previous week
+        val expiredInfo = SundayMapleInfo(
+            noticeId = 900L,
+            title = "썬데이 메이플",
+            url = "https://maplestory.nexon.com/News/Event/Ongoing/900",
+            imageUrl = "https://lwi.nexon.com/old.jpg",
+            eventDate = "2026년 10월 25일(일)",
+            isSpecial = false,
+            benefits = listOf("이전 혜택"),
+            eventEndAt = "2026-10-25T23:59:00+09:00",
+            cachedAt = "2026-10-23T10:00:10",
+            expiresAt = "2026-10-26T00:00:00"
+        )
+        redisService.saveSundayMaple(ObjectMapper().writeValueAsString(expiredInfo), Duration.ofHours(1))
+
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/987","notice_id":987,"date":"2026-10-30T10:00+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}]}"""
+            )
+        }
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(
+                200,
+                """{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/987","contents":"<div><img src=\"https://lwi.nexon.com/sunday987.jpg\"></div>","date":"2026-10-30T10:00+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}"""
+            )
+        }
+        routes["/sunday987.jpg"] = {
+            ClientResponse.create(HttpStatus.OK)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.IMAGE_JPEG_VALUE)
+                .body("fake-image-bytes")
+                .build()
+        }
+
+        val res = service.sunday()
+
+        assertEquals(1, redisService.sundayDeleteCount.get())
+        assertTrue(res.message.contains("스타포스 강화 비용 30% 할인"))
+        assertNotNull(redisService.getSundayMaple())
+        // Friday 10:00:10 -> Monday 00:00:00 = 61h 59m 50s = 223,190 seconds
+        assertEquals(Duration.ofSeconds(223_190), redisService.sundayMapleTtl)
+    }
+
+    @Test
+    fun `sunday falls back to maxNoticeId plus 1 when notice list has no active sunday maple notice`() {
+        // Friday 2026-10-30 09:56:00 KST (within 09:55~10:10 scheduler window)
+        val service = buildServiceWithClock("2026-10-30T09:56:00+09:00")
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"메이플M 연동 이벤트","url":"https://maplestory.nexon.com/1405","notice_id":1405,"date":"2026-10-29T10:00+09:00","date_event_start":"2026-10-29T10:00+09:00","date_event_end":"2026-11-11T23:59+09:00"}]}"""
+            )
+        }
+        routes["/maplestory/v1/notice-event/detail"] = { req ->
+            assertEquals("notice_id=1406", req.url().query)
+            jsonResponse(
+                200,
+                """{"title":"스페셜 썬데이 메이플","url":"https://maplestory.nexon.com/News/Event/Ongoing/1406","contents":"<img src=\"https://lwi.nexon.com/sunday1406.png\">","date":"2026-10-30T09:56+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}"""
+            )
+        }
+        routes["/sunday1406.png"] = {
+            ClientResponse.create(HttpStatus.OK)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.IMAGE_PNG_VALUE)
+                .body("fake-image-bytes")
+                .build()
+        }
+
+        val res = service.sunday()
+
+        assertTrue(res.message.contains("2026년 11월 1일(일) [썬데이 메이플]"))
+        assertTrue(res.message.contains("- 스타포스 강화 비용 30% 할인"))
+        assertNotNull(redisService.getSundayMaple())
+    }
+
+    @Test
+    fun `sunday returns preparing message when only last week expired notice exists`() {
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(400, errorBody("OPENAPI00004"))
+        }
+        // Friday 2026-10-30 10:00:00 KST
+        val service = buildServiceWithClock("2026-10-30T10:00:00+09:00")
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/900","notice_id":900,"date":"2026-10-23T10:00+09:00","date_event_start":"2026-10-25T00:00+09:00","date_event_end":"2026-10-25T23:59+09:00"}]}"""
+            )
+        }
+
+        val res = service.sunday()
+
+        assertEquals("아직 이번 주 썬데이 메이플 공지가 등록되지 않았습니다. 잠시 후 다시 시도해주세요.", res.message)
+        assertNull(redisService.getSundayMaple())
+    }
+
+    @Test
+    fun `preloadSundayMaple and concurrent sunday requests prevent duplicate Gemini API calls`() {
+        val geminiCallCount = AtomicInteger(0)
+        val insideGeminiLatch = CountDownLatch(1)
+        val proceedGeminiLatch = CountDownLatch(1)
+
+        val slowGeminiClient = GeminiClient { _, _ ->
+            geminiCallCount.incrementAndGet()
+            insideGeminiLatch.countDown()
+            proceedGeminiLatch.await(5, TimeUnit.SECONDS)
+            SundayMapleGeminiResult(
+                eventDate = "2026년 11월 1일(일)",
+                isSpecial = false,
+                benefits = listOf("스타포스 30% 할인")
+            )
+        }
+
+        val service = buildServiceWithClock("2026-10-30T10:00:10+09:00", slowGeminiClient)
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/987","notice_id":987,"date":"2026-10-30T10:00+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}]}"""
+            )
+        }
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(
+                200,
+                """{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/987","contents":"<img src='https://lwi.nexon.com/sunday987.jpg'/>","date":"2026-10-30T10:00+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}"""
+            )
+        }
+        routes["/sunday987.jpg"] = {
+            ClientResponse.create(HttpStatus.OK)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.IMAGE_JPEG_VALUE)
+                .body("fake-image-bytes")
+                .build()
+        }
+
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            // Thread 1 starts preload (simulating 10:00:10 scheduler run)
+            val firstFuture = executor.submit<Boolean> { service.preloadSundayMaple() }
+            assertTrue(insideGeminiLatch.await(3, TimeUnit.SECONDS))
+
+            // While Thread 1 is parsing in Gemini, next scheduler tick (10:00:20) immediately skips via tryLock()
+            assertFalse(service.preloadSundayMaple())
+
+            // Concurrent client request waits on lock and reads cached result once Thread 1 finishes
+            val clientFuture = executor.submit<ResponseDto> { service.sunday() }
+
+            proceedGeminiLatch.countDown()
+
+            assertTrue(firstFuture.get(5, TimeUnit.SECONDS))
+            val clientResult = clientFuture.get(5, TimeUnit.SECONDS)
+            assertTrue(clientResult.message.contains("스타포스 30% 할인"))
+
+            // Subsequent scheduler tick (10:00:30) hits Redis cache and returns true immediately without API calls
+            assertTrue(service.preloadSundayMaple())
+
+            // Only 1 call to Nexon API and 1 call to Gemini API occurred across all threads
+            assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
+            assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
+            assertEquals(1, geminiCallCount.get())
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `GeminiClientImpl sorts flash models by latest version and tier priority`() {
+        val rawModels = listOf(
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash",
+            "gemini-flash-latest",
+            "gemini-2.5-flash-preview-tts"
+        )
+
+        val sorted = rawModels
+            .filter { GeminiClientImpl.getModelSortScore(it) > 0 }
+            .sortedByDescending { GeminiClientImpl.getModelSortScore(it) }
+
+        assertEquals(
+            listOf(
+                "gemini-3.8-flash",
+                "gemini-3-flash-preview",
+                "gemini-flash-latest",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite"
+            ),
+            sorted
+        )
     }
 }
