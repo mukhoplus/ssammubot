@@ -11,7 +11,8 @@ class SundayMapleScheduler(
 ) {
     private val logger = LoggerFactory.getLogger(SundayMapleScheduler::class.java)
 
-    @Scheduled(cron = "0/10 0 10 * * FRI", zone = "Asia/Seoul")
+    @Scheduled(cron = "0/30 55-59 9 * * FRI", zone = "Asia/Seoul")
+    @Scheduled(cron = "0/30 0-10 10 * * FRI", zone = "Asia/Seoul")
     fun preloadSundayMapleNotice() {
         try {
             val cached = nexonService.preloadSundayMaple()

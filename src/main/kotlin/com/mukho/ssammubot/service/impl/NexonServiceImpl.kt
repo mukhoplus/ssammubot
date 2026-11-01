@@ -936,7 +936,7 @@ class NexonServiceImpl(
             DayOfWeek.TUESDAY,
             DayOfWeek.WEDNESDAY,
             DayOfWeek.THURSDAY -> true
-            DayOfWeek.FRIDAY -> now.hour < 10
+            DayOfWeek.FRIDAY -> now.hour < 9 || (now.hour == 9 && now.minute < 55)
             DayOfWeek.SATURDAY,
             DayOfWeek.SUNDAY -> false
             else -> false
@@ -957,35 +957,44 @@ class NexonServiceImpl(
             is NexonCallResult.Success -> noticeListResult.data
         }
 
-        val notice = noticeList.event_notice.orEmpty()
-            .firstOrNull { it.title?.contains("썬데이") == true }
-
-        if (notice == null || notice.notice_id == null || notice.date_event_end.isNullOrBlank()) {
-            return NexonMessage.SUNDAY_PREPARING
-        }
-
+        val notices = noticeList.event_notice.orEmpty()
         val now = LocalDateTime.now(clock)
-        val eventEndAtTime = try {
-            OffsetDateTime.parse(notice.date_event_end).atZoneSameInstant(KST).toLocalDateTime()
-        } catch (e: Exception) {
-            return NexonMessage.API_ERROR
+
+        val validNotice = notices.firstOrNull { item ->
+            item.title?.contains("썬데이") == true &&
+                item.notice_id != null &&
+                isNotExpired(item.date_event_end, now)
         }
 
-        if (!now.isBefore(eventEndAtTime)) {
-            return NexonMessage.SUNDAY_PREPARING
-        }
+        val (targetNoticeId, detail) = if (validNotice?.notice_id != null) {
+            when (val detailResult = fetchNoticeDetail(validNotice.notice_id)) {
+                is NexonCallResult.Error -> return detailResult.message
+                is NexonCallResult.Success -> validNotice.notice_id to detailResult.data
+            }
+        } else {
+            val maxNoticeId = notices.mapNotNull { it.notice_id }.maxOrNull()
+                ?: return NexonMessage.SUNDAY_PREPARING
+            val nextNoticeId = maxNoticeId + 1
 
-        val detailResult = nexonGet(
-            uri = "/notice-event/detail?notice_id=${notice.notice_id}",
-            bodyType = NoticeEventDetailDto::class.java,
-            characterName = null,
-            wrapError = { NexonCallResult.Error(it) },
-            onSuccess = { NexonCallResult.Success(it) }
-        ).block() ?: NexonCallResult.Error(NexonMessage.API_ERROR)
-
-        val detail = when (detailResult) {
-            is NexonCallResult.Error -> return detailResult.message
-            is NexonCallResult.Success -> detailResult.data
+            when (val nextDetailResult = fetchNoticeDetail(nextNoticeId)) {
+                is NexonCallResult.Error -> {
+                    if (nextDetailResult.message == NexonMessage.MAINTENANCE ||
+                        nextDetailResult.message == NexonMessage.API_MAINTENANCE ||
+                        nextDetailResult.message == NexonMessage.TOO_MANY_REQUESTS
+                    ) {
+                        return nextDetailResult.message
+                    }
+                    return NexonMessage.SUNDAY_PREPARING
+                }
+                is NexonCallResult.Success -> {
+                    val nextDetail = nextDetailResult.data
+                    if (nextDetail.title?.contains("썬데이") == true && isNotExpired(nextDetail.date_event_end, now)) {
+                        nextNoticeId to nextDetail
+                    } else {
+                        return NexonMessage.SUNDAY_PREPARING
+                    }
+                }
+            }
         }
 
         val imageUrl = extractImageUrl(detail.contents)
@@ -1011,15 +1020,21 @@ class NexonServiceImpl(
             .atStartOfDay()
         val ttl = Duration.between(cachedAtTime, expiresAtTime)
 
+        val eventEndAt = detail.date_event_end?.takeIf { it.isNotBlank() }
+            ?: validNotice?.date_event_end
+            ?: return NexonMessage.API_ERROR
+
         val info = SundayMapleInfo(
-            noticeId = notice.notice_id,
-            title = detail.title?.takeIf { it.isNotBlank() } ?: notice.title ?: "썬데이 메이플",
-            url = detail.url?.takeIf { it.isNotBlank() } ?: notice.url ?: "",
+            noticeId = targetNoticeId,
+            title = detail.title?.takeIf { it.isNotBlank() } ?: validNotice?.title ?: "썬데이 메이플",
+            url = detail.url?.takeIf { it.isNotBlank() }
+                ?: validNotice?.url?.takeIf { it.isNotBlank() }
+                ?: "https://maplestory.nexon.com/News/Event/Ongoing/$targetNoticeId",
             imageUrl = imageUrl,
             eventDate = geminiResult.eventDate.trim(),
             isSpecial = geminiResult.isSpecial,
             benefits = benefits,
-            eventEndAt = detail.date_event_end?.takeIf { it.isNotBlank() } ?: notice.date_event_end,
+            eventEndAt = eventEndAt,
             cachedAt = cachedAtTime.toString(),
             expiresAt = expiresAtTime.toString()
         )
@@ -1034,6 +1049,26 @@ class NexonServiceImpl(
         }
 
         return formatSundayMapleInfo(info)
+    }
+
+    private fun fetchNoticeDetail(noticeId: Long): NexonCallResult<NoticeEventDetailDto> {
+        return nexonGet(
+            uri = "/notice-event/detail?notice_id=$noticeId",
+            bodyType = NoticeEventDetailDto::class.java,
+            characterName = null,
+            wrapError = { NexonCallResult.Error(it) },
+            onSuccess = { NexonCallResult.Success(it) }
+        ).block() ?: NexonCallResult.Error(NexonMessage.API_ERROR)
+    }
+
+    private fun isNotExpired(dateEventEnd: String?, now: LocalDateTime): Boolean {
+        if (dateEventEnd.isNullOrBlank()) return false
+        return try {
+            val eventEndAtTime = OffsetDateTime.parse(dateEventEnd).atZoneSameInstant(KST).toLocalDateTime()
+            now.isBefore(eventEndAtTime)
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun extractImageUrl(contents: String?): String? {
