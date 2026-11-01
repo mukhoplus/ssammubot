@@ -11,6 +11,7 @@ import com.mukho.ssammubot.service.impl.nexon.NexonErrorPolicy
 import com.mukho.ssammubot.service.impl.nexon.NexonMessage
 import com.mukho.ssammubot.utils.CryptoUtil
 import com.mukho.ssammubot.utils.ExperienceUtil
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Service
@@ -26,7 +27,11 @@ import java.time.Duration
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
-import java.util.concurrent.TimeUnit
+import jakarta.annotation.PreDestroy
+import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.ceil
 
@@ -40,7 +45,10 @@ class NexonServiceImpl(
         throw IllegalStateException("GeminiClient is not configured.")
     },
     private val objectMapper: ObjectMapper = ObjectMapper(),
-    private val clock: Clock = Clock.system(KST)
+    private val clock: Clock = Clock.system(KST),
+    private val sundayExecutor: Executor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "sunday-maple-bg").apply { isDaemon = true }
+    }
 ): NexonService {
 
     @Autowired
@@ -61,11 +69,25 @@ class NexonServiceImpl(
         clock = Clock.system(KST)
     )
 
+    private val logger = LoggerFactory.getLogger(NexonServiceImpl::class.java)
     private val sundayLock = ReentrantLock()
+    private val backgroundFetchRunning = AtomicBoolean(false)
+    @Volatile
+    private var lastSundayFailure: SundayFailureState? = null
+
+    private data class SundayFailureState(
+        val message: String,
+        val expiresAt: LocalDateTime
+    )
+
+    @PreDestroy
+    fun shutdownSundayExecutor() {
+        (sundayExecutor as? ExecutorService)?.shutdown()
+    }
 
     companion object {
         private val KST: ZoneId = ZoneId.of("Asia/Seoul")
-        private const val LOCK_WAIT_SECONDS = 15L
+        private const val FAILURE_CACHE_TTL_SECONDS = 60L
         private val IMG_SRC_REGEX = Regex("""<img[^>]+src\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
         private val TARGET_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy년 MM월 dd일")
         private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("MM월 dd일")
@@ -309,6 +331,7 @@ class NexonServiceImpl(
             val now = LocalDateTime.now(clock)
 
             getValidCachedSundayMaple(now)?.let { cached ->
+                lastSundayFailure = null
                 return@logged ResponseDto(formatSundayMapleInfo(cached))
             }
 
@@ -316,37 +339,29 @@ class NexonServiceImpl(
                 return@logged ResponseDto(NexonMessage.SUNDAY_WAITING)
             }
 
-            val locked = try {
-                sundayLock.tryLock(LOCK_WAIT_SECONDS, TimeUnit.SECONDS)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                false
+            if (isSchedulerWindow(now)) {
+                return@logged ResponseDto(NexonMessage.SUNDAY_LOADING)
             }
 
-            if (!locked) {
-                return@logged ResponseDto(NexonMessage.API_ERROR)
-            }
-
-            try {
-                val recheckedNow = LocalDateTime.now(clock)
-                getValidCachedSundayMaple(recheckedNow)?.let { cached ->
-                    return@logged ResponseDto(formatSundayMapleInfo(cached))
+            if (!sundayLock.isLocked && !backgroundFetchRunning.get()) {
+                getValidFailureMessage(now)?.let { failureMessage ->
+                    return@logged ResponseDto(failureMessage)
                 }
-
-                ResponseDto(fetchAndCacheSundayMaple())
-            } finally {
-                sundayLock.unlock()
             }
+
+            triggerBackgroundSundayFetch()
+            ResponseDto(NexonMessage.SUNDAY_LOADING)
         }
 
     override fun preloadSundayMaple(): Boolean {
         val now = LocalDateTime.now(clock)
 
         if (getValidCachedSundayMaple(now) != null) {
+            lastSundayFailure = null
             return true
         }
 
-        if (isWaitingTimeWindow(now)) {
+        if (isPreloadWaitingTimeWindow(now)) {
             return false
         }
 
@@ -357,13 +372,28 @@ class NexonServiceImpl(
         return try {
             val recheckedNow = LocalDateTime.now(clock)
             if (getValidCachedSundayMaple(recheckedNow) != null) {
+                lastSundayFailure = null
                 return true
             }
 
             val message = fetchAndCacheSundayMaple()
-            !NexonMessage.isError(message) &&
+            val succeeded = !NexonMessage.isError(message) &&
                 message != NexonMessage.SUNDAY_PREPARING &&
                 message != NexonMessage.SUNDAY_WAITING
+
+            if (succeeded) {
+                lastSundayFailure = null
+            } else {
+                val finishedNow = LocalDateTime.now(clock)
+                if (!isWaitingTimeWindow(finishedNow) && !isSchedulerWindow(finishedNow)) {
+                    lastSundayFailure = SundayFailureState(
+                        message = message,
+                        expiresAt = finishedNow.plusSeconds(FAILURE_CACHE_TTL_SECONDS)
+                    )
+                }
+            }
+
+            succeeded
         } finally {
             sundayLock.unlock()
         }
@@ -936,10 +966,58 @@ class NexonServiceImpl(
             DayOfWeek.TUESDAY,
             DayOfWeek.WEDNESDAY,
             DayOfWeek.THURSDAY -> true
+            DayOfWeek.FRIDAY -> now.hour < 10
+            DayOfWeek.SATURDAY,
+            DayOfWeek.SUNDAY -> false
+            else -> false
+        }
+    }
+
+    private fun isPreloadWaitingTimeWindow(now: LocalDateTime): Boolean {
+        return when (now.dayOfWeek) {
+            DayOfWeek.MONDAY,
+            DayOfWeek.TUESDAY,
+            DayOfWeek.WEDNESDAY,
+            DayOfWeek.THURSDAY -> true
             DayOfWeek.FRIDAY -> now.hour < 9 || (now.hour == 9 && now.minute < 55)
             DayOfWeek.SATURDAY,
             DayOfWeek.SUNDAY -> false
             else -> false
+        }
+    }
+
+    private fun isSchedulerWindow(now: LocalDateTime): Boolean {
+        if (now.dayOfWeek != DayOfWeek.FRIDAY) return false
+        return now.hour == 10 && now.minute <= 10
+    }
+
+    private fun getValidFailureMessage(now: LocalDateTime): String? {
+        val state = lastSundayFailure ?: return null
+        return if (now.isBefore(state.expiresAt)) {
+            state.message
+        } else {
+            lastSundayFailure = null
+            null
+        }
+    }
+
+    private fun triggerBackgroundSundayFetch() {
+        if (sundayLock.isLocked || !backgroundFetchRunning.compareAndSet(false, true)) {
+            return
+        }
+        try {
+            sundayExecutor.execute {
+                try {
+                    preloadSundayMaple()
+                } catch (e: Exception) {
+                    logger.error("Unhandled error during background Sunday Maple fetch: {}", e.message, e)
+                } finally {
+                    backgroundFetchRunning.set(false)
+                }
+            }
+        } catch (e: Exception) {
+            backgroundFetchRunning.set(false)
+            logger.error("Failed to submit background Sunday Maple fetch task: {}", e.message, e)
         }
     }
 
@@ -953,7 +1031,10 @@ class NexonServiceImpl(
         ).block() ?: NexonCallResult.Error(NexonMessage.API_ERROR)
 
         val noticeList = when (noticeListResult) {
-            is NexonCallResult.Error -> return noticeListResult.message
+            is NexonCallResult.Error -> {
+                logger.warn("Failed to fetch Sunday Maple notice list: {}", noticeListResult.message)
+                return noticeListResult.message
+            }
             is NexonCallResult.Success -> noticeListResult.data
         }
 
@@ -961,19 +1042,25 @@ class NexonServiceImpl(
         val now = LocalDateTime.now(clock)
 
         val validNotice = notices.firstOrNull { item ->
-            item.title?.contains("썬데이") == true &&
+            item.title?.contains("썬데이 메이플") == true &&
                 item.notice_id != null &&
                 isNotExpired(item.date_event_end, now)
         }
 
         val (targetNoticeId, detail) = if (validNotice?.notice_id != null) {
             when (val detailResult = fetchNoticeDetail(validNotice.notice_id)) {
-                is NexonCallResult.Error -> return detailResult.message
+                is NexonCallResult.Error -> {
+                    logger.warn("Failed to fetch Sunday Maple notice detail (noticeId={}): {}", validNotice.notice_id, detailResult.message)
+                    return detailResult.message
+                }
                 is NexonCallResult.Success -> validNotice.notice_id to detailResult.data
             }
         } else {
             val maxNoticeId = notices.mapNotNull { it.notice_id }.maxOrNull()
-                ?: return NexonMessage.SUNDAY_PREPARING
+            if (maxNoticeId == null) {
+                logger.info("No notice_id found in event notice list.")
+                return NexonMessage.SUNDAY_PREPARING
+            }
             val nextNoticeId = maxNoticeId + 1
 
             when (val nextDetailResult = fetchNoticeDetail(nextNoticeId)) {
@@ -982,15 +1069,18 @@ class NexonServiceImpl(
                         nextDetailResult.message == NexonMessage.API_MAINTENANCE ||
                         nextDetailResult.message == NexonMessage.TOO_MANY_REQUESTS
                     ) {
+                        logger.warn("Failed to fetch preview notice detail (noticeId={}): {}", nextNoticeId, nextDetailResult.message)
                         return nextDetailResult.message
                     }
+                    logger.debug("Sunday Maple preview notice (noticeId={}) is not registered yet.", nextNoticeId)
                     return NexonMessage.SUNDAY_PREPARING
                 }
                 is NexonCallResult.Success -> {
                     val nextDetail = nextDetailResult.data
-                    if (nextDetail.title?.contains("썬데이") == true && isNotExpired(nextDetail.date_event_end, now)) {
+                    if (nextDetail.title?.contains("썬데이 메이플") == true && isNotExpired(nextDetail.date_event_end, now)) {
                         nextNoticeId to nextDetail
                     } else {
+                        logger.debug("Preview notice (noticeId={}) is not an active Sunday Maple notice.", nextNoticeId)
                         return NexonMessage.SUNDAY_PREPARING
                     }
                 }
@@ -998,41 +1088,58 @@ class NexonServiceImpl(
         }
 
         val imageUrl = extractImageUrl(detail.contents)
-            ?: return NexonMessage.API_ERROR
+        if (imageUrl == null) {
+            logger.warn("Failed to extract image URL from Sunday Maple notice (noticeId={}).", targetNoticeId)
+            return NexonMessage.API_ERROR
+        }
 
-        val (imageBytes, mimeType) = downloadImage(imageUrl)
-            ?: return NexonMessage.API_ERROR
+        val (imageBytes, mimeType) = downloadImage(imageUrl) ?: run {
+            logger.warn("Failed to download Sunday Maple image (noticeId={}, url={}).", targetNoticeId, imageUrl)
+            return NexonMessage.API_ERROR
+        }
 
         val geminiResult = try {
             geminiClient.extractSundayMaple(imageBytes, mimeType)
         } catch (e: Exception) {
+            logger.error("Failed to extract Sunday Maple info via Gemini (noticeId={}): {}", targetNoticeId, e.message)
             return NexonMessage.API_ERROR
         }
 
         val benefits = GeminiClientImpl.normalizeBenefits(geminiResult.benefits)
         if (geminiResult.eventDate.isBlank() || benefits.isEmpty()) {
+            logger.warn("Gemini returned empty eventDate or benefits (noticeId={}).", targetNoticeId)
             return NexonMessage.API_ERROR
         }
-
-        val cachedAtTime = LocalDateTime.now(clock)
-        val expiresAtTime = cachedAtTime.toLocalDate()
-            .with(TemporalAdjusters.next(DayOfWeek.MONDAY))
-            .atStartOfDay()
-        val ttl = Duration.between(cachedAtTime, expiresAtTime)
 
         val eventEndAt = detail.date_event_end?.takeIf { it.isNotBlank() }
             ?: validNotice?.date_event_end
             ?: return NexonMessage.API_ERROR
 
+        val eventEndDate = try {
+            OffsetDateTime.parse(eventEndAt).atZoneSameInstant(KST).toLocalDate()
+        } catch (e: Exception) {
+            logger.warn("Failed to parse date_event_end {} (noticeId={}).", eventEndAt, targetNoticeId)
+            return NexonMessage.API_ERROR
+        }
+
+        val cachedAtTime = LocalDateTime.now(clock)
+        val expiresAtTime = eventEndDate
+            .with(TemporalAdjusters.nextOrSame(DayOfWeek.MONDAY))
+            .atStartOfDay()
+        val ttl = Duration.between(cachedAtTime, expiresAtTime)
+
+        val resolvedTitle = detail.title?.takeIf { it.isNotBlank() } ?: validNotice?.title ?: "썬데이 메이플"
+        val isSpecial = geminiResult.isSpecial || resolvedTitle.contains("스페셜")
+
         val info = SundayMapleInfo(
             noticeId = targetNoticeId,
-            title = detail.title?.takeIf { it.isNotBlank() } ?: validNotice?.title ?: "썬데이 메이플",
+            title = resolvedTitle,
             url = detail.url?.takeIf { it.isNotBlank() }
                 ?: validNotice?.url?.takeIf { it.isNotBlank() }
                 ?: "https://maplestory.nexon.com/News/Event/Ongoing/$targetNoticeId",
             imageUrl = imageUrl,
             eventDate = geminiResult.eventDate.trim(),
-            isSpecial = geminiResult.isSpecial,
+            isSpecial = isSpecial,
             benefits = benefits,
             eventEndAt = eventEndAt,
             cachedAt = cachedAtTime.toString(),
@@ -1044,7 +1151,7 @@ class NexonServiceImpl(
                 val json = objectMapper.writeValueAsString(info)
                 redisService.saveSundayMaple(json, ttl)
             } catch (e: Exception) {
-                // Ignore Redis save failure and return extracted message
+                logger.warn("Failed to save Sunday Maple info to Redis: {}", e.message)
             }
         }
 

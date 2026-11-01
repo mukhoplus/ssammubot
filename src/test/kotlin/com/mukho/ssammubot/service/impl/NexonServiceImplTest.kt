@@ -31,6 +31,7 @@ import java.time.Duration
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -516,7 +517,8 @@ class NexonServiceImplTest {
                 isSpecial = false,
                 benefits = listOf("스타포스 강화 비용 30% 할인", "몬스터파크 클리어 경험치 +50%")
             )
-        }
+        },
+        sundayExecutor: Executor = Executor { runnable -> runnable.run() }
     ): NexonServiceImpl {
         val kst = ZoneId.of("Asia/Seoul")
         val fixedClock = Clock.fixed(ZonedDateTime.parse(isoKstDateTime).toInstant(), kst)
@@ -546,23 +548,37 @@ class NexonServiceImplTest {
             imageWebClient = testImageWebClient,
             geminiClient = geminiClient,
             objectMapper = ObjectMapper(),
-            clock = fixedClock
+            clock = fixedClock,
+            sundayExecutor = sundayExecutor
         )
     }
 
     @Test
-    fun `sunday returns waiting message during Monday to Friday before 10 AM without calling external API`() {
+    fun `sunday returns waiting message during Monday to Friday before 10-00 when cache is empty without calling external API`() {
         // Thursday 2026-10-29 23:00:00 KST
-        val service = buildServiceWithClock("2026-10-29T23:00:00+09:00")
-        val res = service.sunday()
+        val thursdayService = buildServiceWithClock("2026-10-29T23:00:00+09:00")
+        assertEquals("이번 주 썬데이 메이플 공지는 금요일 오전 10시에 공개됩니다.", thursdayService.sunday().message)
 
-        assertEquals("이번 주 썬데이 메이플 공지는 금요일 오전 10시에 공개됩니다.", res.message)
+        // Friday 2026-10-30 09:56:00 KST (preload window, but cache is still empty)
+        val fridayBeforeTenService = buildServiceWithClock("2026-10-30T09:56:00+09:00")
+        assertEquals("이번 주 썬데이 메이플 공지는 금요일 오전 10시에 공개됩니다.", fridayBeforeTenService.sunday().message)
         assertNull(callCounts["/maplestory/v1/notice-event"])
     }
 
     @Test
-    fun `sunday returns cached data on valid cache hit without calling external API`() {
-        val service = buildServiceWithClock("2026-10-30T12:00:00+09:00")
+    fun `sunday returns loading message during scheduler window 10-00 to 10-10 when cache is empty without calling external API`() {
+        // Friday 2026-10-30 10:02:00 KST
+        val service = buildServiceWithClock("2026-10-30T10:02:00+09:00")
+        val res = service.sunday()
+
+        assertEquals("썬데이 메이플 정보를 불러오는 중입니다.", res.message)
+        assertNull(callCounts["/maplestory/v1/notice-event"])
+    }
+
+    @Test
+    fun `sunday returns cached data immediately during scheduler window 09-55 to 10-10 when cache exists`() {
+        // Friday 2026-10-30 09:58:00 KST
+        val service = buildServiceWithClock("2026-10-30T09:58:00+09:00")
         val cachedInfo = SundayMapleInfo(
             noticeId = 987L,
             title = "썬데이 메이플",
@@ -577,7 +593,7 @@ class NexonServiceImplTest {
                 "흔적 복구 비용 20% 할인"
             ),
             eventEndAt = "2026-11-01T23:59:00+09:00",
-            cachedAt = "2026-10-30T10:00:10",
+            cachedAt = "2026-10-30T09:56:00",
             expiresAt = "2026-11-02T00:00:00"
         )
         redisService.saveSundayMaple(ObjectMapper().writeValueAsString(cachedInfo), Duration.ofHours(60))
@@ -597,10 +613,67 @@ class NexonServiceImplTest {
     }
 
     @Test
-    fun `sunday deletes expired or corrupted cache immediately and re-runs pipeline`() {
+    fun `sunday keeps cache valid at Sunday 23-59-30 until Monday 00-00 expiresAt without calling external API`() {
+        // Sunday 2026-11-01 23:59:30 KST (after eventEndAt 23:59:00, before expiresAt Monday 00:00:00)
+        val service = buildServiceWithClock("2026-11-01T23:59:30+09:00")
+        val cachedInfo = SundayMapleInfo(
+            noticeId = 987L,
+            title = "썬데이 메이플",
+            url = "https://maplestory.nexon.com/News/Event/Ongoing/987",
+            imageUrl = "https://lwi.nexon.com/sunday.jpg",
+            eventDate = "2026년 11월 1일(일)",
+            isSpecial = false,
+            benefits = listOf("스타포스 강화 비용 30% 할인"),
+            eventEndAt = "2026-11-01T23:59:00+09:00",
+            cachedAt = "2026-10-30T10:00:10",
+            expiresAt = "2026-11-02T00:00:00"
+        )
+        redisService.saveSundayMaple(ObjectMapper().writeValueAsString(cachedInfo), Duration.ofMinutes(1))
+
+        val res = service.sunday()
+        assertTrue(res.message.contains("2026년 11월 1일(일) [썬데이 메이플]"))
+        assertNull(callCounts["/maplestory/v1/notice-event"])
+    }
+
+    @Test
+    fun `sunday after 10-11 triggers background fetch and returns loading message then serves cached data`() {
+        // Friday 2026-10-30 10:15:00 KST (after scheduler window)
+        val service = buildServiceWithClock("2026-10-30T10:15:00+09:00")
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/987","notice_id":987,"date":"2026-10-30T10:00+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}]}"""
+            )
+        }
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(
+                200,
+                """{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/987","contents":"<div><img src=\"https://lwi.nexon.com/sunday987.jpg\"></div>","date":"2026-10-30T10:00+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}"""
+            )
+        }
+        routes["/sunday987.jpg"] = {
+            ClientResponse.create(HttpStatus.OK)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.IMAGE_JPEG_VALUE)
+                .body("fake-image-bytes")
+                .build()
+        }
+
+        // First request returns loading message while background task populates Redis
+        val firstRes = service.sunday()
+        assertEquals("썬데이 메이플 정보를 불러오는 중입니다.", firstRes.message)
+        assertNotNull(redisService.getSundayMaple())
+
+        // Second request immediately returns the cached Sunday Maple data
+        val secondRes = service.sunday()
+        assertTrue(secondRes.message.contains("2026년 11월 1일(일) [썬데이 메이플]"))
+        assertTrue(secondRes.message.contains("- 스타포스 강화 비용 30% 할인"))
+        assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
+    }
+
+    @Test
+    fun `preloadSundayMaple deletes expired cache and populates new cache with dynamic TTL`() {
         // Friday 2026-10-30 10:00:10 KST
         val service = buildServiceWithClock("2026-10-30T10:00:10+09:00")
-        // Put expired cache from previous week
         val expiredInfo = SundayMapleInfo(
             noticeId = 900L,
             title = "썬데이 메이플",
@@ -634,17 +707,15 @@ class NexonServiceImplTest {
                 .build()
         }
 
-        val res = service.sunday()
-
+        assertTrue(service.preloadSundayMaple())
         assertEquals(1, redisService.sundayDeleteCount.get())
-        assertTrue(res.message.contains("스타포스 강화 비용 30% 할인"))
         assertNotNull(redisService.getSundayMaple())
         // Friday 10:00:10 -> Monday 00:00:00 = 61h 59m 50s = 223,190 seconds
         assertEquals(Duration.ofSeconds(223_190), redisService.sundayMapleTtl)
     }
 
     @Test
-    fun `sunday falls back to maxNoticeId plus 1 when notice list has no active sunday maple notice`() {
+    fun `preloadSundayMaple falls back to maxNoticeId plus 1 when notice list has no active sunday maple notice`() {
         // Friday 2026-10-30 09:56:00 KST (within 09:55~10:10 scheduler window)
         val service = buildServiceWithClock("2026-10-30T09:56:00+09:00")
         routes["/maplestory/v1/notice-event"] = {
@@ -667,19 +738,15 @@ class NexonServiceImplTest {
                 .build()
         }
 
+        assertTrue(service.preloadSundayMaple())
         val res = service.sunday()
-
-        assertTrue(res.message.contains("2026년 11월 1일(일) [썬데이 메이플]"))
+        assertTrue(res.message.contains("2026년 11월 1일(일) [스페셜 썬데이 메이플]"))
         assertTrue(res.message.contains("- 스타포스 강화 비용 30% 할인"))
         assertNotNull(redisService.getSundayMaple())
     }
 
     @Test
-    fun `sunday returns preparing message when only last week expired notice exists`() {
-        routes["/maplestory/v1/notice-event/detail"] = {
-            jsonResponse(400, errorBody("OPENAPI00004"))
-        }
-        // Friday 2026-10-30 10:00:00 KST
+    fun `preloadSundayMaple returns false and does not cache when only last week expired notice exists`() {
         val service = buildServiceWithClock("2026-10-30T10:00:00+09:00")
         routes["/maplestory/v1/notice-event"] = {
             jsonResponse(
@@ -687,11 +754,36 @@ class NexonServiceImplTest {
                 """{"event_notice":[{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/900","notice_id":900,"date":"2026-10-23T10:00+09:00","date_event_start":"2026-10-25T00:00+09:00","date_event_end":"2026-10-25T23:59+09:00"}]}"""
             )
         }
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(400, errorBody("OPENAPI00004"))
+        }
 
-        val res = service.sunday()
-
-        assertEquals("아직 이번 주 썬데이 메이플 공지가 등록되지 않았습니다. 잠시 후 다시 시도해주세요.", res.message)
+        assertFalse(service.preloadSundayMaple())
         assertNull(redisService.getSundayMaple())
+    }
+
+    @Test
+    fun `sunday after 10-11 caches failure reason for 60 seconds and prevents duplicate API calls`() {
+        val service = buildServiceWithClock("2026-10-30T10:15:00+09:00")
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/900","notice_id":900,"date":"2026-10-23T10:00+09:00","date_event_start":"2026-10-25T00:00+09:00","date_event_end":"2026-10-25T23:59+09:00"}]}"""
+            )
+        }
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(400, errorBody("OPENAPI00004"))
+        }
+
+        // 1st request triggers background fetch and returns loading message
+        val firstRes = service.sunday()
+        assertEquals("썬데이 메이플 정보를 불러오는 중입니다.", firstRes.message)
+        assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
+
+        // 2nd request within 60s returns cached preparing message without calling external API again
+        val secondRes = service.sunday()
+        assertEquals("아직 이번 주 썬데이 메이플 공지가 등록되지 않았습니다. 잠시 후 다시 시도해주세요.", secondRes.message)
+        assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
     }
 
     @Test
@@ -711,7 +803,8 @@ class NexonServiceImplTest {
             )
         }
 
-        val service = buildServiceWithClock("2026-10-30T10:00:10+09:00", slowGeminiClient)
+        val executor = Executors.newFixedThreadPool(2)
+        val service = buildServiceWithClock("2026-10-30T10:15:00+09:00", slowGeminiClient, executor)
         routes["/maplestory/v1/notice-event"] = {
             jsonResponse(
                 200,
@@ -731,29 +824,37 @@ class NexonServiceImplTest {
                 .build()
         }
 
-        val executor = Executors.newFixedThreadPool(2)
         try {
-            // Thread 1 starts preload (simulating 10:00:10 scheduler run)
-            val firstFuture = executor.submit<Boolean> { service.preloadSundayMaple() }
+            // Client 1 triggers background fetch at 10:15 and immediately receives loading message
+            val firstClientRes = service.sunday()
+            assertEquals("썬데이 메이플 정보를 불러오는 중입니다.", firstClientRes.message)
             assertTrue(insideGeminiLatch.await(3, TimeUnit.SECONDS))
 
-            // While Thread 1 is parsing in Gemini, next scheduler tick (10:00:20) immediately skips via tryLock()
-            assertFalse(service.preloadSundayMaple())
+            // While background thread is inside Gemini, concurrent Client 2 also immediately receives loading message
+            val secondClientRes = service.sunday()
+            assertEquals("썬데이 메이플 정보를 불러오는 중입니다.", secondClientRes.message)
 
-            // Concurrent client request waits on lock and reads cached result once Thread 1 finishes
-            val clientFuture = executor.submit<ResponseDto> { service.sunday() }
+            // And a concurrent preloadSundayMaple() call skips immediately via tryLock()
+            assertFalse(service.preloadSundayMaple())
 
             proceedGeminiLatch.countDown()
 
-            assertTrue(firstFuture.get(5, TimeUnit.SECONDS))
-            val clientResult = clientFuture.get(5, TimeUnit.SECONDS)
-            assertTrue(clientResult.message.contains("스타포스 30% 할인"))
+            // Wait briefly for background thread to finish writing to Redis
+            var cachedReady = false
+            for (i in 1..20) {
+                if (redisService.getSundayMaple() != null) {
+                    cachedReady = true
+                    break
+                }
+                Thread.sleep(50)
+            }
+            assertTrue(cachedReady)
 
-            // Subsequent scheduler tick (10:00:30) hits Redis cache and returns true immediately without API calls
-            assertTrue(service.preloadSundayMaple())
+            // Subsequent client request receives the cached Sunday Maple data
+            val thirdClientRes = service.sunday()
+            assertTrue(thirdClientRes.message.contains("스타포스 30% 할인"))
 
             // Only 1 call to Nexon API and 1 call to Gemini API occurred across all threads
-            assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
             assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
             assertEquals(1, geminiCallCount.get())
         } finally {
