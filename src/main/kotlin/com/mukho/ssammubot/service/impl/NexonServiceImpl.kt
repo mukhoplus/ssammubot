@@ -1,5 +1,7 @@
 package com.mukho.ssammubot.service.impl
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.mukho.ssammubot.client.GeminiClient
 import com.mukho.ssammubot.model.*
 import com.mukho.ssammubot.service.ApiLogService
 import com.mukho.ssammubot.service.NexonService
@@ -8,22 +10,62 @@ import com.mukho.ssammubot.service.impl.nexon.NexonErrorPolicy
 import com.mukho.ssammubot.service.impl.nexon.NexonMessage
 import com.mukho.ssammubot.utils.CryptoUtil
 import com.mukho.ssammubot.utils.ExperienceUtil
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Service
 import org.springframework.web.reactive.function.client.WebClient
 import reactor.core.publisher.Mono
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.net.URI
+import java.time.Clock
+import java.time.DayOfWeek
+import java.time.Duration
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.temporal.TemporalAdjusters
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.ceil
 
 @Service("nexonService")
 class NexonServiceImpl(
     private val webClient: WebClient,
     private val redisService: RedisService,
-    private val apiLogService: ApiLogService
+    private val apiLogService: ApiLogService,
+    private val imageWebClient: WebClient = webClient,
+    private val geminiClient: GeminiClient = GeminiClient { _, _ ->
+        throw IllegalStateException("GeminiClient is not configured.")
+    },
+    private val objectMapper: ObjectMapper = ObjectMapper(),
+    private val clock: Clock = Clock.system(KST)
 ): NexonService {
 
+    @Autowired
+    constructor(
+        webClient: WebClient,
+        redisService: RedisService,
+        apiLogService: ApiLogService,
+        @Qualifier("imageWebClient") imageWebClient: WebClient,
+        geminiClient: GeminiClient,
+        objectMapper: ObjectMapper
+    ) : this(
+        webClient = webClient,
+        redisService = redisService,
+        apiLogService = apiLogService,
+        imageWebClient = imageWebClient,
+        geminiClient = geminiClient,
+        objectMapper = objectMapper,
+        clock = Clock.system(KST)
+    )
+
+    private val sundayLock = ReentrantLock()
+
     companion object {
+        private val KST: ZoneId = ZoneId.of("Asia/Seoul")
+        private const val LOCK_WAIT_SECONDS = 15L
+        private val IMG_SRC_REGEX = Regex("""<img[^>]+src\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
         private val TARGET_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy년 MM월 dd일")
         private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("MM월 dd일")
 
@@ -260,6 +302,71 @@ class NexonServiceImpl(
                 getScheduler(characterName, ocid, decryptedApiKey, ::formatQuestInfo).blockOrError()
             })
         }
+
+    override fun sunday(): ResponseDto =
+        logged("sunday", emptyMap()) {
+            val now = LocalDateTime.now(clock)
+
+            getValidCachedSundayMaple(now)?.let { cached ->
+                return@logged ResponseDto(formatSundayMapleInfo(cached))
+            }
+
+            if (isWaitingTimeWindow(now)) {
+                return@logged ResponseDto(NexonMessage.SUNDAY_WAITING)
+            }
+
+            val locked = try {
+                sundayLock.tryLock(LOCK_WAIT_SECONDS, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+
+            if (!locked) {
+                return@logged ResponseDto(NexonMessage.API_ERROR)
+            }
+
+            try {
+                val recheckedNow = LocalDateTime.now(clock)
+                getValidCachedSundayMaple(recheckedNow)?.let { cached ->
+                    return@logged ResponseDto(formatSundayMapleInfo(cached))
+                }
+
+                ResponseDto(fetchAndCacheSundayMaple())
+            } finally {
+                sundayLock.unlock()
+            }
+        }
+
+    override fun preloadSundayMaple(): Boolean {
+        val now = LocalDateTime.now(clock)
+
+        if (getValidCachedSundayMaple(now) != null) {
+            return true
+        }
+
+        if (isWaitingTimeWindow(now)) {
+            return false
+        }
+
+        if (!sundayLock.tryLock()) {
+            return false
+        }
+
+        return try {
+            val recheckedNow = LocalDateTime.now(clock)
+            if (getValidCachedSundayMaple(recheckedNow) != null) {
+                return true
+            }
+
+            val message = fetchAndCacheSundayMaple()
+            !NexonMessage.isError(message) &&
+                message != NexonMessage.SUNDAY_PREPARING &&
+                message != NexonMessage.SUNDAY_WAITING
+        } finally {
+            sundayLock.unlock()
+        }
+    }
 
     private inline fun logged(
         apiName: String,
@@ -786,5 +893,185 @@ class NexonServiceImpl(
             formatSection("[주간 퀘스트]", weeklyQuestLines, "- 등록된 항목이 없거나 이번 주 접속 기록이 없습니다."),
             formatSection("[계정 콘텐츠]", accountContentLines, "- 등록된 항목이 없거나 당일 접속 기록이 없습니다."),
         ).joinToString("\n")
+    }
+
+    private sealed interface NexonCallResult<out T> {
+        data class Success<T>(val data: T) : NexonCallResult<T>
+        data class Error(val message: String) : NexonCallResult<Nothing>
+    }
+
+    private fun getValidCachedSundayMaple(now: LocalDateTime): SundayMapleInfo? {
+        val cachedJson = try {
+            redisService.getSundayMaple()
+        } catch (e: Exception) {
+            null
+        } ?: return null
+
+        return try {
+            val info = objectMapper.readValue(cachedJson, SundayMapleInfo::class.java)
+            if (info.isValidNow(now)) {
+                info
+            } else {
+                deleteSundayMapleSafely()
+                null
+            }
+        } catch (e: Exception) {
+            deleteSundayMapleSafely()
+            null
+        }
+    }
+
+    private fun deleteSundayMapleSafely() {
+        try {
+            redisService.deleteSundayMaple()
+        } catch (e: Exception) {
+            // Ignore Redis delete error
+        }
+    }
+
+    private fun isWaitingTimeWindow(now: LocalDateTime): Boolean {
+        return when (now.dayOfWeek) {
+            DayOfWeek.MONDAY,
+            DayOfWeek.TUESDAY,
+            DayOfWeek.WEDNESDAY,
+            DayOfWeek.THURSDAY -> true
+            DayOfWeek.FRIDAY -> now.hour < 10
+            DayOfWeek.SATURDAY,
+            DayOfWeek.SUNDAY -> false
+            else -> false
+        }
+    }
+
+    private fun fetchAndCacheSundayMaple(): String {
+        val noticeListResult = nexonGet(
+            uri = "/notice-event",
+            bodyType = NoticeEventListDto::class.java,
+            characterName = null,
+            wrapError = { NexonCallResult.Error(it) },
+            onSuccess = { NexonCallResult.Success(it) }
+        ).block() ?: NexonCallResult.Error(NexonMessage.API_ERROR)
+
+        val noticeList = when (noticeListResult) {
+            is NexonCallResult.Error -> return noticeListResult.message
+            is NexonCallResult.Success -> noticeListResult.data
+        }
+
+        val notice = noticeList.event_notice.orEmpty()
+            .firstOrNull { it.title?.contains("썬데이") == true }
+
+        if (notice == null || notice.notice_id == null || notice.date_event_end.isNullOrBlank()) {
+            return NexonMessage.SUNDAY_PREPARING
+        }
+
+        val now = LocalDateTime.now(clock)
+        val eventEndAtTime = try {
+            OffsetDateTime.parse(notice.date_event_end).atZoneSameInstant(KST).toLocalDateTime()
+        } catch (e: Exception) {
+            return NexonMessage.API_ERROR
+        }
+
+        if (!now.isBefore(eventEndAtTime)) {
+            return NexonMessage.SUNDAY_PREPARING
+        }
+
+        val detailResult = nexonGet(
+            uri = "/notice-event/detail?notice_id=${notice.notice_id}",
+            bodyType = NoticeEventDetailDto::class.java,
+            characterName = null,
+            wrapError = { NexonCallResult.Error(it) },
+            onSuccess = { NexonCallResult.Success(it) }
+        ).block() ?: NexonCallResult.Error(NexonMessage.API_ERROR)
+
+        val detail = when (detailResult) {
+            is NexonCallResult.Error -> return detailResult.message
+            is NexonCallResult.Success -> detailResult.data
+        }
+
+        val imageUrl = extractImageUrl(detail.contents)
+            ?: return NexonMessage.API_ERROR
+
+        val (imageBytes, mimeType) = downloadImage(imageUrl)
+            ?: return NexonMessage.API_ERROR
+
+        val geminiResult = try {
+            geminiClient.extractSundayMaple(imageBytes, mimeType)
+        } catch (e: Exception) {
+            return NexonMessage.API_ERROR
+        }
+
+        val benefits = geminiResult.benefits.map { it.trim() }.filter { it.isNotEmpty() }
+        if (geminiResult.eventDate.isBlank() || benefits.isEmpty()) {
+            return NexonMessage.API_ERROR
+        }
+
+        val cachedAtTime = LocalDateTime.now(clock)
+        val expiresAtTime = cachedAtTime.toLocalDate()
+            .with(TemporalAdjusters.next(DayOfWeek.MONDAY))
+            .atStartOfDay()
+        val ttl = Duration.between(cachedAtTime, expiresAtTime)
+
+        val info = SundayMapleInfo(
+            noticeId = notice.notice_id,
+            title = detail.title?.takeIf { it.isNotBlank() } ?: notice.title ?: "썬데이 메이플",
+            url = detail.url?.takeIf { it.isNotBlank() } ?: notice.url ?: "",
+            imageUrl = imageUrl,
+            eventDate = geminiResult.eventDate.trim(),
+            isSpecial = geminiResult.isSpecial,
+            benefits = benefits,
+            eventEndAt = detail.date_event_end?.takeIf { it.isNotBlank() } ?: notice.date_event_end,
+            cachedAt = cachedAtTime.toString(),
+            expiresAt = expiresAtTime.toString()
+        )
+
+        if (!ttl.isNegative && !ttl.isZero) {
+            try {
+                val json = objectMapper.writeValueAsString(info)
+                redisService.saveSundayMaple(json, ttl)
+            } catch (e: Exception) {
+                // Ignore Redis save failure and return extracted message
+            }
+        }
+
+        return formatSundayMapleInfo(info)
+    }
+
+    private fun extractImageUrl(contents: String?): String? {
+        if (contents.isNullOrBlank()) return null
+        val rawUrl = IMG_SRC_REGEX.find(contents)?.groupValues?.getOrNull(1) ?: return null
+        return rawUrl.replace("&amp;", "&").trim().takeIf { it.isNotEmpty() }
+    }
+
+    private fun downloadImage(imageUrl: String): Pair<ByteArray, String>? {
+        return try {
+            imageWebClient.get()
+                .uri(URI.create(imageUrl))
+                .exchangeToMono { response ->
+                    if (response.statusCode().is2xxSuccessful) {
+                        val contentType = response.headers().contentType()
+                            .map { "${it.type}/${it.subtype}" }
+                            .orElse("image/jpeg")
+                        response.bodyToMono(ByteArray::class.java)
+                            .map { bytes -> bytes to contentType }
+                    } else {
+                        response.releaseBody().then(Mono.empty())
+                    }
+                }
+                .block()
+                ?.takeIf { it.first.isNotEmpty() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun formatSundayMapleInfo(info: SundayMapleInfo): String {
+        val header = if (info.isSpecial) "[스페셜 썬데이 메이플]" else "[썬데이 메이플]"
+        val benefitLines = info.benefits.joinToString("\n") { "- $it" }
+        return buildString {
+            append("${info.eventDate} $header\n\n")
+            append(benefitLines)
+            if (info.url.isNotBlank()) {
+                append("\n\n공지 링크: ${info.url}")
+            }
+        }
     }
 }

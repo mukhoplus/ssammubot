@@ -13,6 +13,7 @@ class RedisServiceImpl(
 ): RedisService {
     private val ocidTTL = Duration.ofDays(7)
     private val historyTTL = Duration.ofDays(9)
+    private val sundayMapleKey = "sunday_maple:current"
 
     override fun saveOcid(characterName: String, ocid: String) {
         redisTemplate.opsForValue().set("ocid:$characterName", ocid, ocidTTL)
@@ -89,6 +90,18 @@ class RedisServiceImpl(
         }
         
         return result
+    }
+
+    override fun saveSundayMaple(json: String, ttl: Duration) {
+        redisTemplate.opsForValue().set(sundayMapleKey, json, ttl)
+    }
+
+    override fun getSundayMaple(): String? {
+        return redisTemplate.opsForValue().get(sundayMapleKey)
+    }
+
+    override fun deleteSundayMaple() {
+        redisTemplate.delete(sundayMapleKey)
     }
 
     fun getDuration(date: String): Duration {
