@@ -104,4 +104,13 @@ class NexonController(private val nexonService: NexonService) {
             ResponseEntity.internalServerError().build()
         }
     }
+
+    @GetMapping("/sunday")
+    fun sunday(): ResponseEntity<ResponseDto> {
+        return try {
+            ResponseEntity.ok(nexonService.sunday())
+        } catch (e: Exception) {
+            ResponseEntity.internalServerError().build()
+        }
+    }
 }

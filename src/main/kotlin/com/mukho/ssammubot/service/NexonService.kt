@@ -13,4 +13,6 @@ interface NexonService {
     fun encryptKey(apiKey: String): ResponseDto
     fun boss(characterName: String, apiKey: String? = null): ResponseDto
     fun quest(characterName: String, apiKey: String? = null): ResponseDto
+    fun sunday(): ResponseDto
+    fun preloadSundayMaple(): Boolean
 }
