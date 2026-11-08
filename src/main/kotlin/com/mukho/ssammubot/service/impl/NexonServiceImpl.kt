@@ -1216,6 +1216,6 @@ class NexonServiceImpl(
                 "- $benefit"
             }
         }
-        return "${info.eventDate} $header\n\n$benefitLines"
+        return "${info.eventDate} $header\n$benefitLines"
     }
 }
