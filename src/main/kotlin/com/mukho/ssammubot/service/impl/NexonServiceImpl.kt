@@ -1207,7 +1207,7 @@ class NexonServiceImpl(
     }
 
     private fun formatSundayMapleInfo(info: SundayMapleInfo): String {
-        val header = if (info.isSpecial) "[스페셜 썬데이 메이플]" else "[썬데이 메이플]"
+        val header = if (info.isSpecial) "스페셜 썬데이 메이플" else "썬데이 메이플"
         val normalizedBenefits = GeminiClientImpl.normalizeBenefits(info.benefits)
         val benefitLines = normalizedBenefits.joinToString("\n") { benefit ->
             if (benefit == GeminiClientImpl.SHINING_STARFORCE_HEADER) {
@@ -1216,6 +1216,6 @@ class NexonServiceImpl(
                 "- $benefit"
             }
         }
-        return "${info.eventDate} $header\n\n$benefitLines"
+        return "${info.eventDate} $header\n$benefitLines"
     }
 }
