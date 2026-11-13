@@ -600,8 +600,7 @@ class NexonServiceImplTest {
 
         val res = service.sunday()
         val expected = """
-            2026년 11월 1일(일) [스페셜 썬데이 메이플]
-
+            2026년 11월 1일(일) 스페셜 썬데이 메이플
             ★샤이닝 스타포스 타임★
             - 스타포스 강화 비용 30% 할인
             - 21성 이하에서 스타포스 강화 시 파괴 확률 30% 감소
@@ -631,7 +630,7 @@ class NexonServiceImplTest {
         redisService.saveSundayMaple(ObjectMapper().writeValueAsString(cachedInfo), Duration.ofMinutes(1))
 
         val res = service.sunday()
-        assertTrue(res.message.contains("2026년 11월 1일(일) [썬데이 메이플]"))
+        assertTrue(res.message.contains("2026년 11월 1일(일) 썬데이 메이플"))
         assertNull(callCounts["/maplestory/v1/notice-event"])
     }
 
@@ -665,7 +664,7 @@ class NexonServiceImplTest {
 
         // Second request immediately returns the cached Sunday Maple data
         val secondRes = service.sunday()
-        assertTrue(secondRes.message.contains("2026년 11월 1일(일) [썬데이 메이플]"))
+        assertTrue(secondRes.message.contains("2026년 11월 1일(일) 썬데이 메이플"))
         assertTrue(secondRes.message.contains("- 스타포스 강화 비용 30% 할인"))
         assertEquals(1, callCounts["/maplestory/v1/notice-event"]?.get())
     }
@@ -740,7 +739,7 @@ class NexonServiceImplTest {
 
         assertTrue(service.preloadSundayMaple())
         val res = service.sunday()
-        assertTrue(res.message.contains("2026년 11월 1일(일) [스페셜 썬데이 메이플]"))
+        assertTrue(res.message.contains("2026년 11월 1일(일) 스페셜 썬데이 메이플"))
         assertTrue(res.message.contains("- 스타포스 강화 비용 30% 할인"))
         assertNotNull(redisService.getSundayMaple())
     }
@@ -887,5 +886,143 @@ class NexonServiceImplTest {
             ),
             sorted
         )
+    }
+
+    @Test
+    fun `GeminiClientImpl includes hydrogen model as candidate and ranks it first`() {
+        val rawModels = listOf(
+            "gemini-3-flash-preview",
+            "gemini-4-hydrogen",
+            "gemini-4-carbon",
+            "gemini-2.5-flash-preview-tts"
+        )
+
+        val sorted = rawModels
+            .filter { GeminiClientImpl.isCandidateModel(it) }
+            .sortedByDescending { GeminiClientImpl.getModelSortScore(it) }
+
+        assertEquals(listOf("gemini-4-hydrogen", "gemini-3-flash-preview"), sorted)
+        assertEquals(mapOf("thinkingLevel" to "LOW"), GeminiClientImpl.resolveThinkingConfig("gemini-4-hydrogen"))
+        assertEquals(mapOf("thinkingLevel" to "LOW"), GeminiClientImpl.resolveThinkingConfig("gemini-3-flash-preview"))
+        assertNull(GeminiClientImpl.resolveThinkingConfig("gemini-2.5-flash"))
+    }
+
+    @Test
+    fun `GeminiClientImpl executes candidate models concurrently and returns first successful result`() {
+        val slowModelStarted = CountDownLatch(1)
+        val slowModelRelease = CountDownLatch(1)
+        val calledModels = CopyOnWriteArrayList<String>()
+        val mapper = ObjectMapper()
+
+        val restClient = org.springframework.web.client.RestClient.builder()
+            .baseUrl("https://generativelanguage.googleapis.com")
+            .requestFactory { uri, httpMethod ->
+                object : org.springframework.http.client.AbstractClientHttpRequest() {
+                    override fun getMethod(): org.springframework.http.HttpMethod = httpMethod
+                    override fun getURI(): java.net.URI = uri
+                    override fun getBodyInternal(headers: HttpHeaders): java.io.OutputStream = java.io.ByteArrayOutputStream()
+                    override fun executeInternal(headers: HttpHeaders): org.springframework.http.client.ClientHttpResponse {
+                        val path = uri.path
+                        val bodyBytes = when {
+                            path.endsWith("/v1beta/models") -> {
+                                mapper.writeValueAsBytes(
+                                    mapOf(
+                                        "models" to listOf(
+                                            mapOf("name" to "models/gemini-4-hydrogen", "supportedGenerationMethods" to listOf("generateContent")),
+                                            mapOf("name" to "models/gemini-3-flash-preview", "supportedGenerationMethods" to listOf("generateContent")),
+                                            mapOf("name" to "models/gemini-2.5-flash", "supportedGenerationMethods" to listOf("generateContent"))
+                                        )
+                                    )
+                                )
+                            }
+                            path.contains("gemini-4-hydrogen") -> {
+                                calledModels.add("gemini-4-hydrogen")
+                                slowModelStarted.countDown()
+                                slowModelRelease.await(5, TimeUnit.SECONDS)
+                                throw java.io.IOException("Simulated slow model failure")
+                            }
+                            path.contains("gemini-3-flash-preview") -> {
+                                calledModels.add("gemini-3-flash-preview")
+                                throw java.io.IOException("503 Service Unavailable")
+                            }
+                            else -> {
+                                calledModels.add("gemini-2.5-flash")
+                                slowModelStarted.await(2, TimeUnit.SECONDS)
+                                val parsedPayload = mapper.writeValueAsString(
+                                    SundayMapleGeminiResult(
+                                        eventDate = "2026년 11월 1일(일)",
+                                        isSpecial = true,
+                                        benefits = listOf("샤이닝 스타포스 타임", "스타포스 30% 할인")
+                                    )
+                                )
+                                mapper.writeValueAsBytes(
+                                    mapOf(
+                                        "candidates" to listOf(
+                                            mapOf(
+                                                "content" to mapOf(
+                                                    "parts" to listOf(mapOf("text" to parsedPayload))
+                                                )
+                                            )
+                                        )
+                                    )
+                                )
+                            }
+                        }
+                        return org.springframework.mock.http.client.MockClientHttpResponse(bodyBytes, HttpStatus.OK).apply {
+                            this.headers.contentType = MediaType(MediaType.APPLICATION_JSON, Charsets.UTF_8)
+                        }
+                    }
+                }
+            }
+            .build()
+
+        val client = GeminiClientImpl(
+            geminiRestClient = restClient,
+            objectMapper = mapper,
+            geminiApiKey = "test-key"
+        )
+
+        try {
+            val startMs = System.currentTimeMillis()
+            val result = client.extractSundayMaple("img".toByteArray(), "image/jpeg")
+            val elapsedMs = System.currentTimeMillis() - startMs
+
+            assertEquals("2026년 11월 1일(일)", result.eventDate)
+            assertTrue(result.isSpecial)
+            assertEquals(listOf("★샤이닝 스타포스 타임★", "스타포스 30% 할인"), result.benefits)
+            assertTrue(elapsedMs < 3_000, "Concurrent execution should not wait for 5s slow model, elapsed=${elapsedMs}ms")
+            assertTrue(calledModels.contains("gemini-2.5-flash"))
+        } finally {
+            slowModelRelease.countDown()
+            client.shutdownGeminiExecutor()
+        }
+    }
+
+    @Test
+    fun `preloadSundayMaple returns false within timeout when Nexon notice API hangs`() {
+        val hangingWebClient = WebClient.builder()
+            .baseUrl("https://open.api.nexon.com/maplestory/v1")
+            .exchangeFunction { Mono.never() }
+            .build()
+        val kst = ZoneId.of("Asia/Seoul")
+        val service = NexonServiceImpl(
+            webClient = hangingWebClient,
+            redisService = redisService,
+            apiLogService = apiLogService,
+            imageWebClient = hangingWebClient,
+            geminiClient = GeminiClient { _, _ -> throw IllegalStateException("Gemini must not be called.") },
+            objectMapper = ObjectMapper(),
+            clock = Clock.fixed(ZonedDateTime.parse("2026-10-30T10:00:10+09:00").toInstant(), kst),
+            sundayExecutor = Executor { runnable -> runnable.run() }
+        ).apply {
+            sundayNexonTimeout = Duration.ofMillis(300)
+        }
+
+        val startMs = System.currentTimeMillis()
+        assertFalse(service.preloadSundayMaple())
+        val elapsedMs = System.currentTimeMillis() - startMs
+
+        assertTrue(elapsedMs < 3_000, "preloadSundayMaple must finish within timeout, elapsed=${elapsedMs}ms")
+        assertNull(redisService.getSundayMaple())
     }
 }

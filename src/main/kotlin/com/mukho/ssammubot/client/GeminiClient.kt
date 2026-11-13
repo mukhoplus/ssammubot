@@ -2,6 +2,7 @@ package com.mukho.ssammubot.client
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.mukho.ssammubot.model.SundayMapleGeminiResult
+import jakarta.annotation.PreDestroy
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
@@ -9,6 +10,14 @@ import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestClient
 import java.util.Base64
+import java.util.concurrent.CompletionService
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 fun interface GeminiClient {
     fun extractSundayMaple(imageBytes: ByteArray, mimeType: String): SundayMapleGeminiResult
@@ -24,19 +33,31 @@ class GeminiClientImpl(
 
     private val logger = LoggerFactory.getLogger(GeminiClientImpl::class.java)
 
+    private val threadSequence = AtomicInteger(0)
+    private val geminiExecutor: ExecutorService = Executors.newFixedThreadPool(MAX_CANDIDATE_MODELS) { runnable ->
+        Thread(runnable, "gemini-sunday-${threadSequence.incrementAndGet()}").apply { isDaemon = true }
+    }
+
     @Volatile
     private var cachedFlashModels: List<String>? = null
 
     @Volatile
     private var modelsCacheExpiresAtMs: Long = 0L
 
+    @PreDestroy
+    fun shutdownGeminiExecutor() {
+        geminiExecutor.shutdown()
+    }
+
     companion object {
         private const val MODELS_ENDPOINT = "/v1beta/models"
         private const val MAX_CANDIDATE_MODELS = 3
+        private const val CONCURRENT_TIMEOUT_SECONDS = 25L
         private const val MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000L
         const val SHINING_STARFORCE_HEADER = "★샤이닝 스타포스 타임★"
 
         private val DEFAULT_FALLBACK_MODELS = listOf(
+            "gemini-4-hydrogen",
             "gemini-3-flash-preview",
             "gemini-flash-latest",
             "gemini-2.5-flash",
@@ -44,6 +65,7 @@ class GeminiClientImpl(
         )
 
         private val EXCLUDED_MODEL_REGEX = Regex("tts|image|audio|embedding", RegexOption.IGNORE_CASE)
+        private val LIGHTWEIGHT_MODEL_REGEX = Regex("flash|hydrogen", RegexOption.IGNORE_CASE)
         private val VERSION_REGEX = Regex("""gemini-(\d+(?:\.\d+)?)""")
         private val SNAPSHOT_SUFFIX_REGEX = Regex("""(-\d{3}|-\d{2}-\d{4})$""")
 
@@ -75,6 +97,18 @@ class GeminiClientImpl(
             return versionScore + tierScore
         }
 
+        fun isCandidateModel(modelName: String): Boolean =
+            LIGHTWEIGHT_MODEL_REGEX.containsMatchIn(modelName) && getModelSortScore(modelName) > 0
+
+        internal fun resolveThinkingConfig(modelName: String): Map<String, Any>? {
+            val majorVersion = VERSION_REGEX.find(modelName)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: return null
+            return if (majorVersion >= 3.0) {
+                mapOf("thinkingLevel" to "LOW")
+            } else {
+                null
+            }
+        }
+
         fun normalizeBenefits(benefits: List<String>): List<String> {
             val cleaned = benefits
                 .map { it.trim().removePrefix("-").trim() }
@@ -99,48 +133,101 @@ class GeminiClientImpl(
         check(geminiApiKey.isNotBlank()) { "Gemini API Key is not configured." }
 
         val base64Image = Base64.getEncoder().encodeToString(imageBytes)
-        val requestBody = buildRequestBody(base64Image, mimeType)
         val candidateModels = getSortedFlashModels().take(MAX_CANDIDATE_MODELS)
 
+        val completionService: CompletionService<SundayMapleGeminiResult> =
+            ExecutorCompletionService(geminiExecutor)
+        val futures = mutableListOf<Future<SundayMapleGeminiResult>>()
         var lastException: Exception? = null
 
-        for (modelName in candidateModels) {
-            try {
-                val responseJson = geminiRestClient.post()
-                    .uri("/v1beta/models/$modelName:generateContent")
-                    .header("x-goog-api-key", geminiApiKey)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(requestBody)
-                    .retrieve()
-                    .body(String::class.java)
+        val deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(CONCURRENT_TIMEOUT_SECONDS)
 
-                if (responseJson.isNullOrBlank()) {
-                    logger.warn("Empty response from Gemini model: {}", modelName)
-                    continue
-                }
-
-                val rootNode = objectMapper.readTree(responseJson)
-                val textNode = rootNode.path("candidates")
-                    .path(0)
-                    .path("content")
-                    .path("parts")
-                    .path(0)
-                    .path("text")
-
-                if (textNode.isMissingNode || textNode.asText().isBlank()) {
-                    logger.warn("No text content in Gemini response from model: {}", modelName)
-                    continue
-                }
-
-                val parsed = objectMapper.readValue(textNode.asText(), SundayMapleGeminiResult::class.java)
-                return parsed.copy(benefits = normalizeBenefits(parsed.benefits))
-            } catch (e: Exception) {
-                logger.warn("Gemini model '{}' failed ({}), trying next fallback model.", modelName, e.message)
-                lastException = e
+        try {
+            for (modelName in candidateModels) {
+                futures.add(
+                    completionService.submit {
+                        requestSingleModel(modelName, base64Image, mimeType)
+                    }
+                )
             }
+
+            repeat(futures.size) {
+                val remainingNanos = deadlineNanos - System.nanoTime()
+                if (remainingNanos <= 0) {
+                    throw IllegalStateException(
+                        "Gemini candidate models timed out after ${CONCURRENT_TIMEOUT_SECONDS}s.",
+                        lastException
+                    )
+                }
+
+                val completedFuture = completionService.poll(remainingNanos, TimeUnit.NANOSECONDS)
+                    ?: throw IllegalStateException(
+                        "Gemini candidate models timed out after ${CONCURRENT_TIMEOUT_SECONDS}s.",
+                        lastException
+                    )
+
+                try {
+                    return completedFuture.get()
+                } catch (e: ExecutionException) {
+                    val cause = (e.cause as? Exception) ?: e
+                    lastException = cause
+                } catch (e: Exception) {
+                    lastException = e
+                }
+            }
+        } finally {
+            futures.forEach { it.cancel(true) }
         }
 
-        throw IllegalStateException("All Gemini Flash candidate models failed.", lastException)
+        throw IllegalStateException("All Gemini candidate models failed.", lastException)
+    }
+
+    private fun requestSingleModel(
+        modelName: String,
+        base64Image: String,
+        mimeType: String
+    ): SundayMapleGeminiResult {
+        return try {
+            val requestBody = buildRequestBody(base64Image, mimeType, modelName)
+            val responseJson = geminiRestClient.post()
+                .uri("/v1beta/models/$modelName:generateContent")
+                .header("x-goog-api-key", geminiApiKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(requestBody)
+                .retrieve()
+                .body(String::class.java)
+
+            if (responseJson.isNullOrBlank()) {
+                logger.warn("Empty response from Gemini model: {}", modelName)
+                throw IllegalStateException("Empty response from Gemini model: $modelName")
+            }
+
+            val rootNode = objectMapper.readTree(responseJson)
+            val partsNode = rootNode.path("candidates")
+                .path(0)
+                .path("content")
+                .path("parts")
+
+            val textContent = if (partsNode.isArray) {
+                partsNode.firstOrNull { part ->
+                    !part.path("thought").asBoolean(false) && part.path("text").asText().isNotBlank()
+                }?.path("text")?.asText()
+                    ?: partsNode.path(0).path("text").asText("")
+            } else {
+                ""
+            }
+
+            if (textContent.isBlank()) {
+                logger.warn("No text content in Gemini response from model: {}", modelName)
+                throw IllegalStateException("No text content in Gemini response from model: $modelName")
+            }
+
+            val parsed = objectMapper.readValue(textContent, SundayMapleGeminiResult::class.java)
+            parsed.copy(benefits = normalizeBenefits(parsed.benefits))
+        } catch (e: Exception) {
+            logger.warn("Gemini model '{}' failed ({}).", modelName, e.message)
+            throw e
+        }
     }
 
     internal fun getSortedFlashModels(): List<String> {
@@ -179,7 +266,7 @@ class GeminiClientImpl(
                 if (!supportsGenerate) return@mapNotNull null
 
                 val rawName = modelNode.path("name").asText("").removePrefix("models/")
-                if (rawName.contains("flash") && getModelSortScore(rawName) > 0) rawName else null
+                if (isCandidateModel(rawName)) rawName else null
             }.sortedByDescending { getModelSortScore(it) }
 
             if (flashModels.isNotEmpty()) {
@@ -195,7 +282,34 @@ class GeminiClientImpl(
         }
     }
 
-    private fun buildRequestBody(base64Image: String, mimeType: String): Map<String, Any> {
+    internal fun buildRequestBody(base64Image: String, mimeType: String, modelName: String = ""): Map<String, Any> {
+        val generationConfig = mutableMapOf<String, Any>(
+            "responseMimeType" to "application/json",
+            "responseSchema" to mapOf(
+                "type" to "OBJECT",
+                "properties" to mapOf(
+                    "eventDate" to mapOf(
+                        "type" to "STRING",
+                        "description" to "이벤트 진행 날짜 (예: 2026년 11월 1일(일))"
+                    ),
+                    "isSpecial" to mapOf(
+                        "type" to "BOOLEAN",
+                        "description" to "스페셜 썬데이 메이플 여부"
+                    ),
+                    "benefits" to mapOf(
+                        "type" to "ARRAY",
+                        "items" to mapOf("type" to "STRING"),
+                        "description" to "추출된 핵심 혜택 텍스트 배열 ('샤이닝 스타포스 타임' 포함 시 첫 번째 항목은 반드시 '★샤이닝 스타포스 타임★')"
+                    )
+                ),
+                "required" to listOf("eventDate", "isSpecial", "benefits")
+            )
+        )
+
+        resolveThinkingConfig(modelName)?.let { thinkingConfig ->
+            generationConfig["thinkingConfig"] = thinkingConfig
+        }
+
         return mapOf(
             "contents" to listOf(
                 mapOf(
@@ -210,28 +324,7 @@ class GeminiClientImpl(
                     )
                 )
             ),
-            "generationConfig" to mapOf(
-                "responseMimeType" to "application/json",
-                "responseSchema" to mapOf(
-                    "type" to "OBJECT",
-                    "properties" to mapOf(
-                        "eventDate" to mapOf(
-                            "type" to "STRING",
-                            "description" to "이벤트 진행 날짜 (예: 2026년 11월 1일(일))"
-                        ),
-                        "isSpecial" to mapOf(
-                            "type" to "BOOLEAN",
-                            "description" to "스페셜 썬데이 메이플 여부"
-                        ),
-                        "benefits" to mapOf(
-                            "type" to "ARRAY",
-                            "items" to mapOf("type" to "STRING"),
-                            "description" to "추출된 핵심 혜택 텍스트 배열 ('샤이닝 스타포스 타임' 포함 시 첫 번째 항목은 반드시 '★샤이닝 스타포스 타임★')"
-                        )
-                    ),
-                    "required" to listOf("eventDate", "isSpecial", "benefits")
-                )
-            )
+            "generationConfig" to generationConfig
         )
     }
 }
