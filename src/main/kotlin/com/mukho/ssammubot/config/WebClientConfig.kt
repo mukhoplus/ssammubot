@@ -50,7 +50,7 @@ class WebClientConfig(
             .connectTimeout(Duration.ofSeconds(5))
             .build()
         val requestFactory = JdkClientHttpRequestFactory(jdkHttpClient).apply {
-            setReadTimeout(Duration.ofSeconds(25))
+            setReadTimeout(Duration.ofSeconds(20))
         }
 
         return RestClient.builder()

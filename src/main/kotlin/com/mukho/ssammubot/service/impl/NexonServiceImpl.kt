@@ -31,6 +31,7 @@ import jakarta.annotation.PreDestroy
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.ceil
@@ -50,6 +51,8 @@ class NexonServiceImpl(
         Thread(runnable, "sunday-maple-bg").apply { isDaemon = true }
     }
 ): NexonService {
+
+    internal var sundayNexonTimeout: Duration = SUNDAY_NEXON_TIMEOUT
 
     @Autowired
     constructor(
@@ -88,6 +91,7 @@ class NexonServiceImpl(
     companion object {
         private val KST: ZoneId = ZoneId.of("Asia/Seoul")
         private const val FAILURE_CACHE_TTL_SECONDS = 60L
+        private val SUNDAY_NEXON_TIMEOUT: Duration = Duration.ofSeconds(15)
         private val IMG_SRC_REGEX = Regex("""<img[^>]+src\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
         private val TARGET_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy년 MM월 dd일")
         private val HISTORY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("MM월 dd일")
@@ -1028,7 +1032,7 @@ class NexonServiceImpl(
             characterName = null,
             wrapError = { NexonCallResult.Error(it) },
             onSuccess = { NexonCallResult.Success(it) }
-        ).block() ?: NexonCallResult.Error(NexonMessage.API_ERROR)
+        ).blockForSunday()
 
         val noticeList = when (noticeListResult) {
             is NexonCallResult.Error -> {
@@ -1165,7 +1169,17 @@ class NexonServiceImpl(
             characterName = null,
             wrapError = { NexonCallResult.Error(it) },
             onSuccess = { NexonCallResult.Success(it) }
-        ).block() ?: NexonCallResult.Error(NexonMessage.API_ERROR)
+        ).blockForSunday()
+    }
+
+    private fun <T> Mono<NexonCallResult<T>>.blockForSunday(): NexonCallResult<T> {
+        val fallback: NexonCallResult<T> = NexonCallResult.Error(NexonMessage.API_ERROR)
+        return timeout(sundayNexonTimeout)
+            .onErrorResume(TimeoutException::class.java) {
+                logger.warn("Sunday Maple Nexon API call timed out after {}s.", sundayNexonTimeout.seconds)
+                Mono.just(fallback)
+            }
+            .block() ?: fallback
     }
 
     private fun isNotExpired(dateEventEnd: String?, now: LocalDateTime): Boolean {
