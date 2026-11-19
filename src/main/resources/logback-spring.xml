@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
 
-    <property name="LOG_DIR" value="logs"/>
+    <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
     <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"/>
 
     <!-- 콘솔 출력 -->
@@ -11,9 +11,8 @@
         </encoder>
     </appender>
 
-    <!-- 전체 앱 로그 (ssammubot.log) -->
+    <!-- 전체 앱 로그 (ssammubot.yyyy-MM-dd.log) -->
     <appender name="FILE_APP" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>${LOG_DIR}/ssammubot.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
             <fileNamePattern>${LOG_DIR}/ssammubot.%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>7</maxHistory>
@@ -23,9 +22,8 @@
         </encoder>
     </appender>
 
-    <!-- API 요청/응답 로그 (api.log) -->
+    <!-- API 요청/응답 로그 (api.yyyy-MM-dd.log) -->
     <appender name="FILE_API" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>${LOG_DIR}/api.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
             <fileNamePattern>${LOG_DIR}/api.%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>7</maxHistory>
