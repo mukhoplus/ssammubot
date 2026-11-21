@@ -89,6 +89,7 @@ class NexonServiceImpl(
     }
 
     companion object {
+        private val sundayLogger = LoggerFactory.getLogger("SUNDAY_LOGGER")
         private val KST: ZoneId = ZoneId.of("Asia/Seoul")
         private const val FAILURE_CACHE_TTL_SECONDS = 60L
         private val SUNDAY_NEXON_TIMEOUT: Duration = Duration.ofSeconds(15)
@@ -1026,6 +1027,7 @@ class NexonServiceImpl(
     }
 
     private fun fetchAndCacheSundayMaple(): String {
+        sundayLogger.info("[NexonAPI] Requesting event notice list: GET /notice-event")
         val noticeListResult = nexonGet(
             uri = "/notice-event",
             bodyType = NoticeEventListDto::class.java,
@@ -1037,9 +1039,16 @@ class NexonServiceImpl(
         val noticeList = when (noticeListResult) {
             is NexonCallResult.Error -> {
                 logger.warn("Failed to fetch Sunday Maple notice list: {}", noticeListResult.message)
+                sundayLogger.warn("[NexonAPI] Event notice list response failed: {}", noticeListResult.message)
                 return noticeListResult.message
             }
-            is NexonCallResult.Success -> noticeListResult.data
+            is NexonCallResult.Success -> {
+                sundayLogger.info(
+                    "[NexonAPI] Event notice list response: count={}",
+                    noticeListResult.data.event_notice?.size ?: 0
+                )
+                noticeListResult.data
+            }
         }
 
         val notices = noticeList.event_notice.orEmpty()
@@ -1163,13 +1172,27 @@ class NexonServiceImpl(
     }
 
     private fun fetchNoticeDetail(noticeId: Long): NexonCallResult<NoticeEventDetailDto> {
-        return nexonGet(
+        sundayLogger.info("[NexonAPI] Requesting event notice detail: noticeId={}", noticeId)
+        val result = nexonGet(
             uri = "/notice-event/detail?notice_id=$noticeId",
             bodyType = NoticeEventDetailDto::class.java,
             characterName = null,
             wrapError = { NexonCallResult.Error(it) },
             onSuccess = { NexonCallResult.Success(it) }
         ).blockForSunday()
+
+        when (result) {
+            is NexonCallResult.Error ->
+                sundayLogger.warn("[NexonAPI] Event notice detail response failed (noticeId={}): {}", noticeId, result.message)
+            is NexonCallResult.Success ->
+                sundayLogger.info(
+                    "[NexonAPI] Event notice detail response (noticeId={}): title={}, dateEventEnd={}",
+                    noticeId,
+                    result.data.title,
+                    result.data.date_event_end
+                )
+        }
+        return result
     }
 
     private fun <T> Mono<NexonCallResult<T>>.blockForSunday(): NexonCallResult<T> {
@@ -1224,7 +1247,9 @@ class NexonServiceImpl(
         val header = if (info.isSpecial) "스페셜 썬데이 메이플" else "썬데이 메이플"
         val normalizedBenefits = GeminiClientImpl.normalizeBenefits(info.benefits)
         val benefitLines = normalizedBenefits.joinToString("\n") { benefit ->
-            if (benefit == GeminiClientImpl.SHINING_STARFORCE_HEADER) {
+            if (benefit == GeminiClientImpl.SHINING_STARFORCE_HEADER ||
+                benefit == GeminiClientImpl.MIRACLE_TIME_HEADER
+            ) {
                 benefit
             } else {
                 "- $benefit"

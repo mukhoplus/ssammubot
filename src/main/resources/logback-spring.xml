@@ -33,9 +33,26 @@
         </encoder>
     </appender>
 
+    <!-- 썬데이 메이플 로그 (sunday/sunday.yyyy-MM-dd.log) -->
+    <appender name="FILE_SUNDAY" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/sunday/sunday.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
     <!-- ApiLoggingInterceptor → api.log 전용 -->
     <logger name="com.mukho.ssammubot.interceptor.ApiLoggingInterceptor" level="INFO" additivity="false">
         <appender-ref ref="FILE_API"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+    <!-- 썬데이 메이플 전용 로그 → sunday/sunday.log -->
+    <logger name="SUNDAY_LOGGER" level="INFO" additivity="false">
+        <appender-ref ref="FILE_SUNDAY"/>
         <appender-ref ref="CONSOLE"/>
     </logger>
 

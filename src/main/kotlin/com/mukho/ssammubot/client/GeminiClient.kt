@@ -32,6 +32,7 @@ class GeminiClientImpl(
 ) : GeminiClient {
 
     private val logger = LoggerFactory.getLogger(GeminiClientImpl::class.java)
+    private val sundayLogger = LoggerFactory.getLogger("SUNDAY_LOGGER")
 
     private val threadSequence = AtomicInteger(0)
     private val geminiExecutor: ExecutorService = Executors.newFixedThreadPool(MAX_CANDIDATE_MODELS) { runnable ->
@@ -55,6 +56,7 @@ class GeminiClientImpl(
         private const val CONCURRENT_TIMEOUT_SECONDS = 25L
         private const val MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000L
         const val SHINING_STARFORCE_HEADER = "★샤이닝 스타포스 타임★"
+        const val MIRACLE_TIME_HEADER = "★미라클 타임★"
 
         private val DEFAULT_FALLBACK_MODELS = listOf(
             "gemini-4-hydrogen",
@@ -74,6 +76,7 @@ class GeminiClientImpl(
             1. 하단 유의사항, 안내 문구(회색 작은 글씨)는 모두 제외할 것.
             2. 이벤트 진행 날짜(eventDate, 예: "2026년 11월 1일(일)"), 스페셜 썬데이 여부(isSpecial), 핵심 혜택 목록(benefits)만 수치나 퍼센트(%) 오타 없이 정확히 추출할 것.
             3. 만약 이미지 내에 '샤이닝 스타포스 타임'이 포함되어 있다면, benefits 배열의 최상단(첫 번째 요소)에 반드시 "★샤이닝 스타포스 타임★"을 넣고, 그 다음 요소부터 세부 혜택을 나열할 것.
+            4. 만약 이미지 내에 '미라클 타임'이 포함되어 있다면, benefits 배열의 최상단(첫 번째 요소)에 반드시 "★미라클 타임★"을 넣고, 그 다음 요소부터 세부 혜택을 나열할 것.
         """.trimIndent()
 
         fun getModelSortScore(modelName: String): Int {
@@ -119,13 +122,23 @@ class GeminiClientImpl(
                 return normalized.contains("샤이닝스타포스타임")
             }
 
-            if (cleaned.none(::isShiningStarforceHeader)) {
+            fun isMiracleTimeHeader(text: String): Boolean {
+                val normalized = text.replace(Regex("[^가-힣a-zA-Z0-9]"), "")
+                return normalized.contains("미라클타임")
+            }
+
+            val headers = buildList {
+                if (cleaned.any(::isShiningStarforceHeader)) add(SHINING_STARFORCE_HEADER)
+                if (cleaned.any(::isMiracleTimeHeader)) add(MIRACLE_TIME_HEADER)
+            }
+
+            if (headers.isEmpty()) {
                 return cleaned
             }
 
-            val remaining = cleaned.filterNot(::isShiningStarforceHeader)
+            val remaining = cleaned.filterNot { isShiningStarforceHeader(it) || isMiracleTimeHeader(it) }
 
-            return listOf(SHINING_STARFORCE_HEADER) + remaining
+            return headers + remaining
         }
     }
 
@@ -134,6 +147,7 @@ class GeminiClientImpl(
 
         val base64Image = Base64.getEncoder().encodeToString(imageBytes)
         val candidateModels = getSortedFlashModels().take(MAX_CANDIDATE_MODELS)
+        sundayLogger.info("[GeminiAPI] Selected candidate models: {}", candidateModels)
 
         val completionService: CompletionService<SundayMapleGeminiResult> =
             ExecutorCompletionService(geminiExecutor)
@@ -187,6 +201,7 @@ class GeminiClientImpl(
         base64Image: String,
         mimeType: String
     ): SundayMapleGeminiResult {
+        sundayLogger.info("[GeminiAPI] Requesting generateContent: model={}, mimeType={}, base64Length={}", modelName, mimeType, base64Image.length)
         return try {
             val requestBody = buildRequestBody(base64Image, mimeType, modelName)
             val responseJson = geminiRestClient.post()
@@ -223,9 +238,18 @@ class GeminiClientImpl(
             }
 
             val parsed = objectMapper.readValue(textContent, SundayMapleGeminiResult::class.java)
-            parsed.copy(benefits = normalizeBenefits(parsed.benefits))
+            val normalizedBenefits = normalizeBenefits(parsed.benefits)
+            sundayLogger.info(
+                "[GeminiAPI] Response succeeded: model={}, eventDate={}, isSpecial={}, benefitsCount={}",
+                modelName,
+                parsed.eventDate,
+                parsed.isSpecial,
+                normalizedBenefits.size
+            )
+            parsed.copy(benefits = normalizedBenefits)
         } catch (e: Exception) {
             logger.warn("Gemini model '{}' failed ({}).", modelName, e.message)
+            sundayLogger.warn("[GeminiAPI] Response failed: model={}, error={}", modelName, e.message)
             throw e
         }
     }
@@ -299,7 +323,7 @@ class GeminiClientImpl(
                     "benefits" to mapOf(
                         "type" to "ARRAY",
                         "items" to mapOf("type" to "STRING"),
-                        "description" to "추출된 핵심 혜택 텍스트 배열 ('샤이닝 스타포스 타임' 포함 시 첫 번째 항목은 반드시 '★샤이닝 스타포스 타임★')"
+                        "description" to "추출된 핵심 혜택 텍스트 배열 ('샤이닝 스타포스 타임' 또는 '미라클 타임' 포함 시 첫 번째 항목은 반드시 '★샤이닝 스타포스 타임★' 또는 '★미라클 타임★')"
                     )
                 ),
                 "required" to listOf("eventDate", "isSpecial", "benefits")
