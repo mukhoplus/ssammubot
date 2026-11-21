@@ -609,6 +609,12 @@ class NexonServiceImplTest {
 
         assertEquals(expected, res.message)
         assertNull(callCounts["/maplestory/v1/notice-event"])
+        assertEquals(
+            listOf("★미라클 타임★", "잠재능력과 에디셔널 잠재능력 재설정 시 등급이 승급될 확률 2배!"),
+            GeminiClientImpl.normalizeBenefits(
+                listOf("미라클 타임", "잠재능력과 에디셔널 잠재능력 재설정 시 등급이 승급될 확률 2배!")
+            )
+        )
     }
 
     @Test
