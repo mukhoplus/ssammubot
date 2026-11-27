@@ -1177,6 +1177,7 @@ class NexonServiceImpl(
             uri = "/notice-event/detail?notice_id=$noticeId",
             bodyType = NoticeEventDetailDto::class.java,
             characterName = null,
+            policy = NexonErrorPolicy.NOTICE_DETAIL,
             wrapError = { NexonCallResult.Error(it) },
             onSuccess = { NexonCallResult.Success(it) }
         ).blockForSunday()

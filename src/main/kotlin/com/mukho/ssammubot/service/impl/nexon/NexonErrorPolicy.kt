@@ -23,5 +23,9 @@ internal data class NexonErrorPolicy(
             forbiddenMessage = NexonMessage.INVALID_API_KEY,
             fallback400 = NexonMessage.CHECK_NICKNAME,
         )
+
+        val NOTICE_DETAIL = NexonErrorPolicy(
+            fallback400 = NexonMessage.SUNDAY_PREPARING,
+        )
     }
 }
