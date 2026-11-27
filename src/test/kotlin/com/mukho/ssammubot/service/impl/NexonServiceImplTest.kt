@@ -792,6 +792,26 @@ class NexonServiceImplTest {
     }
 
     @Test
+    fun `sunday returns preparing message when active notice detail returns 400 OPENAPI00004`() {
+        val service = buildServiceWithClock("2026-10-30T10:15:00+09:00")
+        routes["/maplestory/v1/notice-event"] = {
+            jsonResponse(
+                200,
+                """{"event_notice":[{"title":"썬데이 메이플","url":"https://maplestory.nexon.com/987","notice_id":987,"date":"2026-10-30T10:00+09:00","date_event_start":"2026-11-01T00:00+09:00","date_event_end":"2026-11-01T23:59+09:00"}]}"""
+            )
+        }
+        routes["/maplestory/v1/notice-event/detail"] = {
+            jsonResponse(400, errorBody("OPENAPI00004"))
+        }
+
+        val firstRes = service.sunday()
+        assertEquals("썬데이 메이플 정보를 불러오는 중입니다.", firstRes.message)
+
+        val secondRes = service.sunday()
+        assertEquals("아직 이번 주 썬데이 메이플 공지가 등록되지 않았습니다. 잠시 후 다시 시도해주세요.", secondRes.message)
+    }
+
+    @Test
     fun `preloadSundayMaple and concurrent sunday requests prevent duplicate Gemini API calls`() {
         val geminiCallCount = AtomicInteger(0)
         val insideGeminiLatch = CountDownLatch(1)
